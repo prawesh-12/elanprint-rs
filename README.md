@@ -15,6 +15,22 @@ dependencies. Match-on-chip: templates never leave the sensor.
 - `docs/protocol.md`: every byte the driver may send. Source of truth.
 - `docs/findings.md`: observed device behaviour, append-only.
 
+## Run everything
+
+One command builds the workspace, runs all tests and runs clippy:
+
+```bash
+./tools/check.sh
+```
+
+Single commands per binary:
+
+```bash
+cargo login-app                  # desktop login window
+cargo run -p elanmoc-cli -- info # sensor status, read only
+cargo run -p elanmocd            # daemon, needs root for the bus name
+```
+
 ## Run the login app
 
 The app is a demo front end over the daemon. Granting unlocks the window
