@@ -18,21 +18,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Open the device, print what it is, release it. Sends no protocol bytes.
+    /// Open device, print descriptors, send nothing.
     Probe {
-        /// Also read `0x83` with nothing pending, to prove the timeout path works.
+        /// Read 0x83 idle to check timeout path.
         #[arg(long)]
         check_timeout: bool,
     },
-    /// Send `fw_ver` and nothing else. The GO / NO-GO probe.
+    /// Send fw_ver only, connectivity probe.
     FwVer,
     /// Firmware version, sensor size and enrolled count.
     Info,
     /// Read one slot's record.
     FingerInfo {
-        /// Finger id.
         id: u8,
-        /// Send `enrolled_num` first, in the same session.
+        /// Send enrolled_num first, same session.
         #[arg(long)]
         prime: bool,
     },
@@ -430,7 +429,7 @@ fn describe(state: &SlotState) -> String {
     }
 }
 
-/// Print the exact bytes an enroll of `slot` will send. No device I/O.
+/// No device I/O.
 fn enroll_plan(slot: u8) {
     use elanmoc_proto::{TOTAL_ENROLL_ATTEMPTS, sub_id};
     println!("plan for slot {slot}, one claim, armed once, never re-armed:");
@@ -451,7 +450,7 @@ fn enroll_plan(slot: u8) {
     println!("  sub_id:     0x{:02x}", sub_id(slot));
 }
 
-/// Run the full enroll sequence in one claim. Writes flash.
+/// One claim. Writes flash.
 async fn enroll(
     device: &Device,
     cancel: &CancellationToken,
@@ -571,10 +570,7 @@ async fn enroll(
     Ok(())
 }
 
-/// Send one machine-produced command and read its reply.
-///
-/// The endpoint and length come from the state machine, never from the
-/// outgoing bytes: the machine is what knows which command it queued.
+/// Endpoint comes from machine, not outgoing bytes.
 async fn machine_round(
     device: &Device,
     out: &[u8],
@@ -598,7 +594,7 @@ async fn machine_round(
     }
 }
 
-/// Hold the armed claim until /tmp/elanmoc-commit-go appears.
+/// Holds armed claim until commit file appears.
 async fn wait_for_go(cancel: &CancellationToken) -> Result<()> {
     println!("HOLD before commit: create /tmp/elanmoc-commit-go to continue");
     loop {
@@ -614,7 +610,7 @@ async fn wait_for_go(cancel: &CancellationToken) -> Result<()> {
     }
 }
 
-/// Read past the commit reply in case the chip sends trailing packets.
+/// Drains trailing packets after commit reply.
 async fn drain_trailing(device: &Device, cancel: &CancellationToken) {
     match device
         .recv(EndpointIn::Status, 64, Duration::from_millis(500), cancel)

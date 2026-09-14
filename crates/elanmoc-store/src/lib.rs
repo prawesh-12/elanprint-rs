@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 
 use elanmoc_proto::SlotState;
 
-/// Where the daemon keeps the mapping. Mode 0600, owned by root.
+/// Mapping file, mode 0600, owned by root.
 pub const DEFAULT_PATH: &str = "/var/lib/elanmoc/prints.json";
 
-/// Highest slot id `sync` scans. 0c90 answers ids 0 to 15 identically.
+/// Highest slot id scanned.
 pub const MAX_SLOT: u8 = 15;
 
-/// fprintd finger names. Anything else and GNOME Settings shows nothing.
+/// Names fprintd accepts, GNOME requires.
 pub const FINGER_NAMES: [&str; 10] = [
     "left-thumb",
     "left-index-finger",
@@ -24,18 +24,16 @@ pub const FINGER_NAMES: [&str; 10] = [
     "right-little-finger",
 ];
 
-/// Whether a finger name is one fprintd accepts.
 pub fn is_valid_finger(name: &str) -> bool {
     FINGER_NAMES.contains(&name)
 }
 
-/// Unix user to finger name to on-chip slot.
+/// User to finger to slot.
 pub type Prints = BTreeMap<String, BTreeMap<String, u8>>;
 
-/// Everything the store can fail with.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error("io error: {0}")]
+    #[error("{0}")]
     Io(#[from] io::Error),
     #[error("store file does not parse: {0}")]
     Parse(#[from] serde_json::Error),

@@ -1,7 +1,4 @@
-//! USB transport for the ELAN 04f3:0c90 fingerprint sensor.
-//!
-//! Moves bytes. Holds no protocol knowledge: it does not know what any opcode
-//! means, and it never chooses an endpoint on the caller's behalf.
+//! Byte transport, no protocol knowledge.
 
 use std::time::Duration;
 
@@ -14,32 +11,22 @@ pub use error::UsbError;
 
 mod error;
 
-/// Vendor id of the sensor.
 pub const VID: u16 = 0x04f3;
-/// Product id of the sensor.
 pub const PID: u16 = 0x0c90;
 
 const INTERFACE: u8 = 0;
 const EP_OUT: u8 = 0x01; // commands out, per protocol.md
 const MAX_PACKET: usize = 64; // wMaxPacketSize on every endpoint, per descriptors.txt
 
-/// The three IN endpoints, which are not interchangeable.
-///
-/// Commands that wait for a finger reply on [`EndpointIn::TouchWait`].
-/// Everything else replies on [`EndpointIn::Status`]. Reading the wrong one
-/// turns a successful operation into a timeout.
+/// IN endpoints are not interchangeable; wrong one times out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointIn {
-    /// `0x82`, image data.
     Image,
-    /// `0x83`, status and data responses.
     Status,
-    /// `0x84`, results of commands that wait for a touch.
     TouchWait,
 }
 
 impl EndpointIn {
-    /// Wire address of this endpoint.
     pub fn address(self) -> u8 {
         match self {
             Self::Image => 0x82,
@@ -49,24 +36,16 @@ impl EndpointIn {
     }
 }
 
-/// One endpoint as the device describes itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointInfo {
-    /// Wire address, with the direction bit set for IN endpoints.
     pub address: u8,
-    /// `true` for IN, device to host.
     pub is_in: bool,
-    /// Bulk, interrupt, isochronous or control.
     pub transfer_type: &'static str,
-    /// `wMaxPacketSize`.
     pub max_packet_size: usize,
-    /// `bInterval`.
     pub interval: u8,
 }
 
-/// An open, claimed handle to the sensor.
-///
-/// Dropping it releases interface 0.
+/// Dropping releases interface 0.
 pub struct Device {
     interface: Interface,
     device: nusb::Device,
@@ -75,7 +54,6 @@ pub struct Device {
 }
 
 impl Device {
-    /// Find and claim the sensor by vendor and product id.
     pub async fn open() -> Result<Self, UsbError> {
         let info = nusb::list_devices()?
             .find(|d| d.vendor_id() == VID && d.product_id() == PID)
@@ -101,7 +79,6 @@ impl Device {
         })
     }
 
-    /// Bus and device address the handle was opened on.
     pub fn location(&self) -> (u8, u8) {
         (self.bus, self.address)
     }

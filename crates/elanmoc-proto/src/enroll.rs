@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use crate::{Command, ProtoError, Response, Retry, Status, TOTAL_ENROLL_ATTEMPTS};
 
-/// What the enroll loop can fail with.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EnrollError {
     #[error("slot limit reached (0xdd)")]
@@ -20,7 +19,6 @@ pub enum EnrollError {
     Parse(#[from] ProtoError),
 }
 
-/// Visible enroll progress, per plan.md.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnrollState {
     Idle,
@@ -38,9 +36,7 @@ pub enum EnrollState {
     Failed,
 }
 
-/// Next step for the caller. The caller sends `Send` bytes and feeds the
-/// reply back into [`Enroll::step`]. After `EmitProgress` or `EmitRetry` the
-/// caller collects the pending resend with [`Enroll::take_send`].
+/// Caller sends bytes, feeds replies, collects resends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnrollAction {
     Send(Vec<u8>),
@@ -60,7 +56,6 @@ enum Pending {
     Commit,
 }
 
-/// Pure enroll driver. No I/O, no timeouts, no endpoint knowledge.
 pub struct Enroll {
     slot: u8,
     needed: u8,
@@ -71,12 +66,10 @@ pub struct Enroll {
 }
 
 impl Enroll {
-    /// Begin enrolling `slot`, expecting the shared stage count.
     pub fn new(slot: u8) -> Self {
         Self::with_total(slot, TOTAL_ENROLL_ATTEMPTS)
     }
 
-    /// Same, with an explicit stage count for replay tests.
     pub fn with_total(slot: u8, total: u8) -> Self {
         Self {
             slot,

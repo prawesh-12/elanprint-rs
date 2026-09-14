@@ -1,13 +1,8 @@
-//! One fingerprint login attempt as an explicit state machine.
-//!
-//! The screen feeds daemon signals in and renders the returned action. Grant
-//! happens on exactly one path: a terminal `verify-match` for the claimed
-//! user. Anything unrecognised fails closed.
+//! Grant only on terminal verify-match; unknowns fail closed.
 
 use crate::policy::AttemptPolicy;
 use crate::status::verify;
 
-/// Visible login progress.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionState {
     Idle,
@@ -20,7 +15,6 @@ pub enum SessionState {
     Failed,
 }
 
-/// Daemon events the screen reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Signal {
     Status {
@@ -34,7 +28,6 @@ pub enum Signal {
     Cancelled,
 }
 
-/// What the screen must do next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Prompt(String),

@@ -2,3 +2,4 @@ target/
 *.pcap
 *.pcapng
 captures/
+extras/

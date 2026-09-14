@@ -1,41 +1,25 @@
-/// A status byte, classified per the `docs/protocol.md` error table.
-///
-/// The high-nibble-zero rule is described in the source as eyeballed rather
-/// than derived, so anything not in the table is [`Status::Unknown`] and gets
-/// logged rather than assumed to be success.
+/// Eyeballed: high nibble zero is Ok, else Unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
-    /// High nibble is zero.
     Ok(u8),
-    /// The user should be asked to touch again.
     Retry(Retry),
-    /// `0xdd`, no slots left.
     MaxEnrolled,
-    /// `0xfd`, this finger is not enrolled.
     NotEnrolled,
-    /// In the table's range but not a documented value.
     Unknown(u8),
 }
 
-/// Why a sample was rejected. These are retries, not failures.
+/// Rejected sample; retry touch, not failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Retry {
-    /// `0x41`.
     MoveDown,
-    /// `0x42`.
     MoveRight,
-    /// `0x43`.
     MoveUp,
-    /// `0x44`.
     MoveLeft,
-    /// `0xfb`, sensor dirty or wet.
     Dirty,
-    /// `0xfe`, finger area not enough.
     AreaTooSmall,
 }
 
 impl Status {
-    /// Classify a status byte.
     pub fn classify(byte: u8) -> Self {
         match byte {
             0x41 => Self::Retry(Retry::MoveDown),
@@ -51,25 +35,20 @@ impl Status {
         }
     }
 
-    /// Whether the operation may be retried with another touch.
     pub fn is_retry(self) -> bool {
         matches!(self, Self::Retry(_))
     }
 }
 
-/// A verify answer with no conflation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyOutcome {
-    /// Chip matched the finger with this id.
     Match(u8),
-    /// `0xfd`. The finger is unknown, not a capture failure.
+    /// Unknown finger, not capture failure.
     NoMatch,
-    /// Bad contact. Ask for another touch, not a failure.
     Retry(Retry),
 }
 
 impl VerifyOutcome {
-    /// Sort a verify status into its outcome.
     pub fn classify(status: Status) -> Result<Self, crate::ProtoError> {
         match status {
             Status::Ok(id) => Ok(Self::Match(id)),
@@ -92,36 +71,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn high_nibble_zero_is_not_an_error() {
+    fn ok_range() {
         assert_eq!(Status::classify(0x00), Status::Ok(0x00));
         assert_eq!(Status::classify(0x0f), Status::Ok(0x0f));
     }
 
     #[test]
-    fn documented_retries_classify_as_retries() {
+    fn retries_retry() {
         for b in [0x41, 0x42, 0x43, 0x44, 0xfb, 0xfe] {
-            assert!(Status::classify(b).is_retry(), "0x{b:02x} should retry");
+            assert!(Status::classify(b).is_retry(), "not retry 0x{b:02x}");
         }
     }
 
     #[test]
-    fn max_enrolled_is_not_a_retry() {
+    fn max_enrolled() {
         assert_eq!(Status::classify(0xdd), Status::MaxEnrolled);
         assert!(!Status::classify(0xdd).is_retry());
     }
 
     #[test]
-    fn finger_not_enrolled_is_its_own_case() {
+    fn not_enrolled() {
         assert_eq!(Status::classify(0xfd), Status::NotEnrolled);
     }
 
     #[test]
-    fn undocumented_high_nibble_is_unknown_not_ok() {
+    fn unknown_byte() {
         assert_eq!(Status::classify(0x99), Status::Unknown(0x99));
     }
 
     #[test]
-    fn verify_match_carries_the_finger_id() {
+    fn verify_match() {
         assert_eq!(
             VerifyOutcome::classify(Status::Ok(2)),
             Ok(VerifyOutcome::Match(2))
@@ -129,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_fd_is_no_match_not_a_retry() {
+    fn verify_no_match() {
         assert_eq!(
             VerifyOutcome::classify(Status::NotEnrolled),
             Ok(VerifyOutcome::NoMatch)
@@ -137,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_retry_stays_a_retry() {
+    fn verify_retry() {
         assert_eq!(
             VerifyOutcome::classify(Status::Retry(Retry::Dirty)),
             Ok(VerifyOutcome::Retry(Retry::Dirty))
@@ -145,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_dd_is_an_error_not_an_outcome() {
+    fn verify_max_enrolled_err() {
         assert!(VerifyOutcome::classify(Status::MaxEnrolled).is_err());
     }
 }

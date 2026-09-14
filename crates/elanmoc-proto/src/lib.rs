@@ -1,10 +1,4 @@
-//! Command encoding and response parsing for the ELAN 04f3:0c90.
-//!
-//! Pure. Bytes in, bytes out, no I/O and no dependency on the transport crate,
-//! so every function here is testable against recorded fixtures with no
-//! hardware attached.
-//!
-//! Every byte sequence produced here corresponds to a row in `docs/protocol.md`.
+//! ELAN 04f3:0c90 codecs
 
 use std::time::Duration;
 
@@ -16,22 +10,14 @@ mod enroll;
 mod error;
 mod status;
 
-/// Which IN endpoint a command's reply arrives on.
-///
-/// Mirrors `elanmoc-usb::EndpointIn`. Duplicated rather than shared because
-/// this crate must not depend on the transport crate. The caller maps it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyEndpoint {
-    /// `0x82`.
     Image,
-    /// `0x83`.
     Status,
-    /// `0x84`, commands that wait for a finger.
     TouchWait,
 }
 
 impl ReplyEndpoint {
-    /// Wire address.
     pub fn address(self) -> u8 {
         match self {
             Self::Image => 0x82,
@@ -41,72 +27,66 @@ impl ReplyEndpoint {
     }
 }
 
-/// Borrowed stage count, unconfirmed on 0c90.
+/// borrowed count, unconfirmed on 0c90
 pub const TOTAL_ENROLL_ATTEMPTS: u8 = 8;
 
-/// Sub id byte for `commit`, per protocol.md.
+/// sub id byte for commit
 pub fn sub_id(finger_id: u8) -> u8 {
     0xf0 | finger_id.wrapping_add(5)
 }
 
-/// A command from the `docs/protocol.md` table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    /// `40 19`, firmware version.
+    /// 40 19 fw version
     FwVersion,
-    /// `00 0c`, sensor dimensions.
+    /// 00 0c sensor dimensions
     SensorSize,
-    /// `40 ff 04`, count of enrolled fingers.
+    /// 40 ff 04 enrolled count
     EnrolledNum,
-    /// `40 ff 12` plus a finger id, 70 byte slot record.
+    /// 40 ff 12 plus id, 70 byte reply
     FingerInfo(u8),
-    /// `40 ff 03`, wait for a touch and match it. Replies on `0x84`.
+    /// 40 ff 03 reply on 0x84
     Verify,
-    /// `40 ff 02`, end the current session. Sent before releasing after an error.
-    ///
-    /// `docs/protocol.md` gives `in_len` 2. 0c90 sends nothing, confirmed from
-    /// idle with a 5 second wait, so nothing is read back. See `findings.md`.
+    /// 40 ff 02 0c90 replies nothing
     Abort,
-    /// `40 ff 01` plus slot, totals and progress. Replies on `0x84`.
+    /// 40 ff 01 reply on 0x84
     Enroll {
         finger_id: u8,
         total_attempts: u8,
         attempts_done: u8,
     },
-    /// `40 ff 10`, run after the last sample. 3 byte reply.
+    /// 40 ff 10 3 byte reply
     CheckCollision,
-    /// `40 ff 11` plus 69 byte payload. Writes flash.
+    /// 40 ff 11 writes flash
     Commit {
         sub_id: u8,
         user: [u8; 68],
     },
-    /// `40 ff 05` plus id and zero. Erases one slot.
+    /// 40 ff 05 erases one slot
     Delete(u8),
-    /// `40 ff 13` plus 69 byte payload. Erases one sub id.
+    /// 40 ff 13 erases one sub id
     DeleteSubsid {
         sub_id: u8,
         tail: [u8; 68],
     },
-    /// `40 ff 99`, no reply. Erases every template.
+    /// 40 ff 99 erases every template
     WipeAll,
-    /// `40 27 57 44 54 52 53 54`, watchdog reset, no reply.  // reset_device, per protocol.md
+    /// 40 27 reset, no reply
     ResetDevice,
-    /// `00 09`, debug image read on `0x82`.
+    /// 00 09 reply on 0x82
     CaptureStart {
         width: u16,
         height: u16,
     },
-    /// `40` plus register selector, one value byte back.
+    /// 40 plus selector, one byte reply
     ReadRegister(u8),
 }
 
 impl Command {
-    /// Empty user data commit for the given slot.
     pub fn commit(sub_id: u8) -> Self {
         Self::Commit { sub_id, user: [0; 68] }
     }
 
-    /// Build `delete_subsid` from a 70 byte record.
     pub fn delete_subsid(sub_id: u8, record: &[u8]) -> Result<Self, ProtoError> {
         if record.len() != 70 {
             return Err(ProtoError::UnexpectedLength {
@@ -120,7 +100,6 @@ impl Command {
         Ok(Self::DeleteSubsid { sub_id, tail })
     }
 
-    /// The exact bytes to write.
     pub fn encode(&self) -> Vec<u8> {
         match self {
             Self::FwVersion => vec![0x40, 0x19],
@@ -128,7 +107,7 @@ impl Command {
             Self::EnrolledNum => vec![0x40, 0xff, 0x04],
             Self::FingerInfo(id) => vec![0x40, 0xff, 0x12, *id],
             Self::Verify => vec![0x40, 0xff, 0x03],
-            Self::Abort => vec![0x40, 0xff, 0x02],  // abort, per protocol.md
+            Self::Abort => vec![0x40, 0xff, 0x02],
             Self::Enroll {
                 finger_id,
                 total_attempts,
@@ -136,7 +115,7 @@ impl Command {
             } => vec![
                 0x40,
                 0xff,
-                0x01,  // enroll, per protocol.md
+                0x01,
                 *finger_id,
                 *total_attempts,
                 *attempts_done,
@@ -145,7 +124,7 @@ impl Command {
             Self::CheckCollision => vec![0x40, 0xff, 0x10],
             Self::Commit { sub_id, user } => {
                 let mut out = Vec::with_capacity(72);
-                out.extend_from_slice(&[0x40, 0xff, 0x11]);  // commit, per protocol.md
+                out.extend_from_slice(&[0x40, 0xff, 0x11]);
                 out.push(*sub_id);
                 out.extend_from_slice(user);
                 out
@@ -153,7 +132,7 @@ impl Command {
             Self::Delete(id) => vec![0x40, 0xff, 0x05, *id, 0x00],
             Self::DeleteSubsid { sub_id, tail } => {
                 let mut out = Vec::with_capacity(72);
-                out.extend_from_slice(&[0x40, 0xff, 0x13]);  // delete_subsid, per protocol.md
+                out.extend_from_slice(&[0x40, 0xff, 0x13]);
                 out.push(*sub_id);
                 out.extend_from_slice(tail);
                 out
@@ -165,7 +144,7 @@ impl Command {
         }
     }
 
-    /// Bytes to read back. There is no length field on the wire.
+    /// no length field on wire
     pub fn expected_len(&self) -> usize {
         match self {
             Self::FwVersion | Self::EnrolledNum | Self::Verify => 2,
@@ -182,7 +161,6 @@ impl Command {
         }
     }
 
-    /// Endpoint the reply arrives on.
     pub fn reply_endpoint(&self) -> ReplyEndpoint {
         match self {
             Self::FwVersion
@@ -202,7 +180,7 @@ impl Command {
         }
     }
 
-    /// How long to wait for the reply. Chosen, not measured.
+    /// timeouts chosen, not measured
     pub fn timeout(&self) -> Duration {
         match self {
             Self::FwVersion | Self::SensorSize | Self::EnrolledNum | Self::Abort => {
@@ -220,7 +198,6 @@ impl Command {
         }
     }
 
-    /// Name as it appears in `docs/protocol.md`.
     pub fn name(&self) -> &'static str {
         match self {
             Self::FwVersion => "fw_ver",
@@ -241,7 +218,7 @@ impl Command {
         }
     }
 
-    /// Whether this command changes flash. GATE required before first run.
+    /// GATE required before flash writes
     pub fn is_destructive(&self) -> bool {
         matches!(
             self,
@@ -254,99 +231,65 @@ impl Command {
     }
 }
 
-/// What one slot's `finger_info` record says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlotState {
-    /// Last byte is `0xff`: nothing enrolled here.
     Empty,
-    /// Byte 1 is `0xff`: the sensor is in the stuck state the source describes.
     Stuck,
-    /// A populated record.
     Enrolled {
-        /// The full 70 bytes as received. The layout beyond byte 1 is not
-        /// documented for 0c90, so nothing is decoded out of it yet.
         raw: Vec<u8>,
     },
-    /// The two byte form, where byte 1 is an error code.
     Error(u8),
 }
 
-/// A parsed reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Response {
-    /// Firmware version.
     FwVersion {
-        /// Byte 0.
         major: u8,
-        /// Byte 1.
         minor: u8,
     },
-    /// Sensor dimensions, with the documented off by one already applied.
     SensorSize {
-        /// `byte0 + 1`.
         width: u16,
-        /// `byte2 + 1`.
         height: u16,
     },
-    /// Count of enrolled fingers, from byte 1.
     EnrolledNum {
-        /// Byte 1.
         count: u8,
     },
-    /// Result of a touch-wait match.
     Verify {
-        /// Byte 0, as received.
         byte0: u8,
-        /// Byte 1 classified. `Ok(id)` is a match on that finger id,
-        /// `NotEnrolled` is `0xfd`, which is a normal answer, not a failure.
         status: Status,
     },
-    /// Session ended.
     Abort {
-        /// Byte 1, when there is one. 0c90 replies with nothing.
         status: Option<Status>,
     },
-    /// One slot record.
     FingerInfo {
-        /// The id that was asked about.
         id: u8,
-        /// What the record says.
         state: SlotState,
     },
-    /// One enroll sample. Byte 1 is 0 on a good sample.
     Enroll {
         byte0: u8,
         status: Status,
     },
-    /// Post-sample collision check. Byte 2 is the clashing id.
     CheckCollision {
         byte0: u8,
         colliding: Option<u8>,
     },
-    /// Flash write result. Byte 1 is 0 on success.
     Commit {
         byte0: u8,
         status: Status,
     },
-    /// Single slot erase result.
     Delete {
         byte0: u8,
         status: Status,
     },
-    /// Sub id erase result.
     DeleteSubsid {
         byte0: u8,
         status: Status,
     },
-    /// No reply. Chip sends nothing.
     WipeAll,
-    /// No reply. Device re-enumerates.
     ResetDevice,
-    /// Raw image bytes, `2 * w * h` long.
     CaptureStart {
         raw: Vec<u8>,
     },
-    /// Register value in byte 0, status in byte 1.
     ReadRegister {
         value: u8,
         status: Status,
@@ -354,10 +297,7 @@ pub enum Response {
 }
 
 impl Response {
-    /// Parse a reply against the command that produced it.
-    ///
-    /// `raw` may be shorter than [`Command::expected_len`]: `finger_info` has a
-    /// documented two byte error form. Anything else short is an error.
+    /// finger_info allows 2 byte error form
     pub fn parse(cmd: &Command, raw: &[u8]) -> Result<Self, ProtoError> {
         match cmd {
             Command::FwVersion => {
@@ -493,22 +433,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fw_version_encodes_to_the_documented_bytes() {
+    fn fw_version_encodes() {
         assert_eq!(Command::FwVersion.encode(), vec![0x40, 0x19]);
     }
 
     #[test]
-    fn sensor_size_encodes_to_the_documented_bytes() {
+    fn sensor_size_encodes() {
         assert_eq!(Command::SensorSize.encode(), vec![0x00, 0x0c]);
     }
 
     #[test]
-    fn enrolled_num_encodes_to_the_documented_bytes() {
+    fn enrolled_num_encodes() {
         assert_eq!(Command::EnrolledNum.encode(), vec![0x40, 0xff, 0x04]);
     }
 
     #[test]
-    fn finger_info_appends_the_finger_id() {
+    fn finger_info_appends_id() {
         assert_eq!(
             Command::FingerInfo(3).encode(),
             vec![0x40, 0xff, 0x12, 0x03]
@@ -516,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn encoded_length_matches_the_protocol_table() {
+    fn encoded_len_matches() {
         assert_eq!(Command::FwVersion.encode().len(), 2);
         assert_eq!(Command::SensorSize.encode().len(), 2);
         assert_eq!(Command::EnrolledNum.encode().len(), 3);
@@ -524,12 +464,12 @@ mod tests {
     }
 
     #[test]
-    fn abort_encodes_to_the_documented_bytes() {
+    fn abort_encodes() {
         assert_eq!(Command::Abort.encode(), vec![0x40, 0xff, 0x02]);
     }
 
     #[test]
-    fn abort_expects_no_reply_on_0c90() {
+    fn abort_no_reply() {
         assert_eq!(Command::Abort.expected_len(), 0);
         assert_eq!(
             Response::parse(&Command::Abort, &[]),
@@ -538,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn abort_still_parses_a_reply_if_one_ever_arrives() {
+    fn abort_parses_reply() {
         assert_eq!(
             Response::parse(&Command::Abort, &[0x40, 0x00]),
             Ok(Response::Abort {
@@ -548,23 +488,23 @@ mod tests {
     }
 
     #[test]
-    fn verify_encodes_to_the_documented_bytes() {
+    fn verify_encodes() {
         assert_eq!(Command::Verify.encode(), vec![0x40, 0xff, 0x03]);
     }
 
     #[test]
-    fn verify_replies_on_the_touch_wait_endpoint() {
+    fn verify_on_touch_wait() {
         assert_eq!(Command::Verify.reply_endpoint(), ReplyEndpoint::TouchWait);
         assert_eq!(ReplyEndpoint::TouchWait.address(), 0x84);
     }
 
     #[test]
-    fn verify_waits_far_longer_than_a_status_command() {
+    fn verify_timeout_longer() {
         assert!(Command::Verify.timeout() > Command::FwVersion.timeout());
     }
 
     #[test]
-    fn verify_fd_is_not_enrolled_not_an_ok_status() {
+    fn verify_fd_not_enrolled() {
         let got = Response::parse(&Command::Verify, &[0x40, 0xfd]);
         assert_eq!(
             got,
@@ -576,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_low_byte_is_a_matched_finger_id() {
+    fn verify_low_byte_match() {
         let got = Response::parse(&Command::Verify, &[0x40, 0x02]);
         assert_eq!(
             got,
@@ -588,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_commands_all_reply_on_status() {
+    fn read_only_on_status() {
         for cmd in [
             Command::FwVersion,
             Command::SensorSize,
@@ -605,13 +545,13 @@ mod tests {
     }
 
     #[test]
-    fn fw_version_parses_both_bytes() {
+    fn fw_version_parses() {
         let got = Response::parse(&Command::FwVersion, &[0x01, 0x08]);
         assert_eq!(got, Ok(Response::FwVersion { major: 1, minor: 8 }));
     }
 
     #[test]
-    fn sensor_size_applies_the_off_by_one() {
+    fn sensor_size_off_by_one() {
         let got = Response::parse(&Command::SensorSize, &[0x37, 0x00, 0x77, 0x00]);
         assert_eq!(
             got,
@@ -623,19 +563,19 @@ mod tests {
     }
 
     #[test]
-    fn enrolled_num_reads_byte_one() {
+    fn enrolled_num_byte_one() {
         let got = Response::parse(&Command::EnrolledNum, &[0x40, 0x02]);
         assert_eq!(got, Ok(Response::EnrolledNum { count: 2 }));
     }
 
     #[test]
-    fn short_reply_to_fw_version_is_an_error() {
+    fn short_fw_version_fails() {
         let got = Response::parse(&Command::FwVersion, &[0x01]);
         assert!(matches!(got, Err(ProtoError::UnexpectedLength { .. })));
     }
 
     #[test]
-    fn finger_info_last_byte_ff_means_the_slot_is_empty() {
+    fn finger_info_empty() {
         let mut raw = vec![0u8; 70];
         raw[69] = 0xff;
         let got = Response::parse(&Command::FingerInfo(4), &raw);
