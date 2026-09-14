@@ -207,7 +207,7 @@ impl LoginApp {
         self.enroll_cancel = Some(cancel);
         self.enroll_done = 0;
         self.enroll_tone = EnrollTone::Idle;
-        self.enroll_status = format!("stage 0 of {}", self.enroll_total);
+        self.enroll_status = format!("touch the sensor, stage 0 of {}", self.enroll_total);
     }
 
     fn cancel_enroll(&mut self) {

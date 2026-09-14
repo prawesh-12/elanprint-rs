@@ -540,9 +540,21 @@ impl Worker {
         Err(WorkerError::Enroll(e))
     }
 
-    /// First slot without a 70 byte occupied record.
+    /// First slot the store does not track and without a 70 byte record.
+    ///
+    /// The 2 byte form cannot tell empty from occupied, so the store leads
+    /// and the chip record only vetoes. Never reuses a tracked slot.
     async fn free_slot(&mut self, cancel: &CancellationToken) -> Result<u8, WorkerError> {
+        let store = Store::open(&self.store_path)?;
+        let taken: Vec<u8> = store
+            .prints()
+            .values()
+            .flat_map(|fingers| fingers.values().copied())
+            .collect();
         for id in 0..=MAX_SLOT {
+            if taken.contains(&id) {
+                continue;
+            }
             let raw = self
                 .round(
                     &Command::FingerInfo(id).encode(),
