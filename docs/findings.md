@@ -765,3 +765,29 @@ nothing was re-run and nothing was excluded. Touch latencies in seconds:
 Phase 4 is fully complete: 10 of 10 matches on id 0 plus 10 of 10
 no-matches on other fingers. The no-match path in the UI and the daemon
 mapping now rest on observed `0xfd`, not on assumption.
+
+---
+
+## 2026-09-14 Slot 1 enroll FAILED at the collision check, no flash write
+
+Same discipline as GATE 3a: one armed claim, capture running, handshake per
+touch, hold before commit (commit never sent). Left index finger, slot 1,
+sub id `0xf6`.
+
+Accepted: pre-check `0xfd` (confirmed), 8 samples `40 00` (6 confirmed, 2
+arrived on lingering touches and logged unconfirmed), 2 `MoveUp` retries at
+attempt 6 held the counter and resent correctly.
+
+Then `40 ff 10` went out and nothing came back in 2 s. Timeout, abort sent,
+bailed before commit. No flash write: count stayed 1. Capture holds the
+whole run plus the abort.
+
+Candidates, undecided from one event: the 2 s collision timeout is marginal
+(GATE 3a answered in about 1.07 s); the minutes-long messaging gaps between
+touches here versus 22 s straight in GATE 3a may have starved the session,
+though the last sample answered one read prior; or a transient wedge.
+Post-abort the first `fw_ver` read stale (`40 19` answered `40 00`), the
+next claim read clean (1.8, 80x80, count 1). Self-recovered, no reset sent.
+
+No retry. A second attempt, if ordered, wants a longer collision timeout
+and tighter touch turnaround, stated as a plan change first.
