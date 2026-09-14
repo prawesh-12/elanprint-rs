@@ -1,0 +1,12 @@
+[package]
+name = "elanmoc-algo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+elanmoc-proto.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

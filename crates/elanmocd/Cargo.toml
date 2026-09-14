@@ -12,6 +12,7 @@ path = "src/main.rs"
 elanmoc-usb.workspace = true
 elanmoc-proto.workspace = true
 elanmoc-store.workspace = true
+elanmoc-algo.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

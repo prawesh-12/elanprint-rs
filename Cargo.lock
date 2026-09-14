@@ -374,6 +374,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "elanmoc-algo"
+version = "0.1.0"
+dependencies = [
+ "elanmoc-proto",
+ "thiserror",
+]
+
+[[package]]
 name = "elanmoc-cli"
 version = "0.1.0"
 dependencies = [
@@ -422,6 +430,7 @@ name = "elanmocd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "elanmoc-algo",
  "elanmoc-proto",
  "elanmoc-store",
  "elanmoc-usb",

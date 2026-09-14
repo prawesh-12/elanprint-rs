@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/elanmoc-usb", "crates/elanmoc-proto", "crates/elanmoc-store", "crates/elanmoc-cli", "crates/elanmocd"]
+members = ["crates/elanmoc-usb", "crates/elanmoc-proto", "crates/elanmoc-store", "crates/elanmoc-algo", "crates/elanmoc-cli", "crates/elanmocd"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,6 +23,7 @@ anyhow = "1"
 elanmoc-usb = { path = "crates/elanmoc-usb" }
 elanmoc-proto = { path = "crates/elanmoc-proto" }
 elanmoc-store = { path = "crates/elanmoc-store" }
+elanmoc-algo = { path = "crates/elanmoc-algo" }
 elanmocd = { path = "crates/elanmocd" }
 
 [workspace.lints.clippy]
