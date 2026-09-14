@@ -98,6 +98,10 @@ enum Action {
         /// Seconds per touch wait, overriding the protocol defaults.
         #[arg(long)]
         wait: Option<u64>,
+        /// Stop after the collision check and wait for /tmp/elanmoc-commit-go
+        /// before sending commit. Same claim held throughout.
+        #[arg(long)]
+        hold_before_commit: bool,
     },
 }
 
@@ -142,9 +146,9 @@ async fn main() -> Result<()> {
             enroll_plan(slot);
             Ok(())
         }
-        Action::Enroll { finger, slot, wait } => {
+        Action::Enroll { finger, slot, wait, hold_before_commit } => {
             session(&cancel, move |d, c| {
-                Box::pin(enroll(d, c, finger, slot, wait))
+                Box::pin(enroll(d, c, finger, slot, wait, hold_before_commit))
             })
             .await
         }
@@ -454,10 +458,14 @@ async fn enroll(
     finger: String,
     slot: u8,
     wait: Option<u64>,
+    hold_before_commit: bool,
 ) -> Result<()> {
     use elanmoc_proto::{TOTAL_ENROLL_ATTEMPTS, sub_id};
     if !FINGER_NAMES.contains(&finger.as_str()) {
         bail!("unknown finger '{finger}', want one of: {}", FINGER_NAMES.join(", "));
+    }
+    if hold_before_commit {
+        let _ = std::fs::remove_file("/tmp/elanmoc-commit-go");
     }
     let touch_wait = wait.map(Duration::from_secs);
 
@@ -526,7 +534,11 @@ async fn enroll(
                 out = next;
             }
             EnrollAction::Send(next) => {
-                println!("collision check clear, sending commit ...");
+                println!("collision check clear, commit bytes: {}", elanmoc_usb::hex(&next));
+                if hold_before_commit {
+                    wait_for_go(cancel).await?;
+                }
+                println!("sending commit ...");
                 let raw = machine_round(device, &next, None, cancel).await?;
                 drain_trailing(device, cancel).await;
                 match sm.step(&raw) {
@@ -601,6 +613,22 @@ fn machine_io(out: &[u8], touch_wait: Option<Duration>) -> Result<(EndpointIn, u
         return Ok((EndpointIn::Status, 2, Cmd::commit(0).timeout()));
     }
     bail!("machine produced bytes outside protocol.md")
+}
+
+/// Hold the armed claim until /tmp/elanmoc-commit-go appears.
+async fn wait_for_go(cancel: &CancellationToken) -> Result<()> {
+    println!("HOLD before commit: create /tmp/elanmoc-commit-go to continue");
+    loop {
+        if std::path::Path::new("/tmp/elanmoc-commit-go").exists() {
+            println!("go received, sending commit on the held claim");
+            return Ok(());
+        }
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => bail!("cancelled during hold, aborting"),
+            () = tokio::time::sleep(Duration::from_secs(2)) => {}
+        }
+    }
 }
 
 /// Read past the commit reply in case the chip sends trailing packets.
