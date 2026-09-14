@@ -10,8 +10,37 @@ dependencies. Match-on-chip: templates never leave the sensor.
 - `crates/elanmoc-store`: unix user to on-chip slot mapping.
 - `crates/elanmoc-cli`: `elanmoc-cli` debug and admin tool.
 - `crates/elanmocd`: `elanmocd` daemon, owns `net.reactivated.Fprint`.
+- `crates/elanmoc-algo`: login decision engine, pure, no I/O.
+- `crates/elanmoc-login`: `elanmoc-login` desktop app, demo front end.
 - `docs/protocol.md`: every byte the driver may send. Source of truth.
 - `docs/findings.md`: observed device behaviour, append-only.
+
+## Run the login app
+
+The app is a demo front end over the daemon. Granting unlocks the window
+only. Real session auth stays on the PAM path.
+
+```bash
+cargo run -p elanmoc-login
+```
+
+Flow in the window: Connect, pick user and finger, Login with fingerprint,
+touch when asked. Cancel stops the wait. Sign out resets the screen.
+
+The app needs a reader on the system bus. Until `elanmocd` owns
+`net.reactivated.Fprint` (GATE 6), it reports "no reader" and nothing else
+works. The daemon needs root to own the bus name:
+
+```bash
+sudo ./target/debug/elanmocd
+```
+
+`ELANMOC_STORE` points the daemon at a store file, default
+`/var/lib/elanmoc/prints.json`. For unprivileged runs:
+
+```bash
+ELANMOC_STORE=/tmp/prints.json ./target/debug/elanmocd
+```
 
 ## PAM rollback
 
