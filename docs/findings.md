@@ -303,3 +303,45 @@ carries `Option<Status>` so a reply is still parsed if some other firmware
 sends one.
 
 `fw_ver` and `enrolled_num` unchanged afterwards.
+
+## 2026-09-14 Second `verify` attempt, still no reply on `0x84`
+
+Capture, bus 1 device 2:
+
+```
+  5.758  S  bulk OUT 0x01  -115    3  40 ff 03
+  5.758  C  bulk OUT 0x01     0    3
+  5.758  S  bulk IN  0x84  -115   64
+125.761  C  bulk IN  0x84    -2    0
+125.761  S  bulk OUT 0x01  -115    3  40 ff 02
+125.761  C  bulk OUT 0x01     0    3
+125.774  S  bulk OUT 0x01  -115    4  40 ff 12 00
+125.774  C  bulk OUT 0x01     0    4
+125.775  S  bulk IN  0x83  -115  128
+125.775  C  bulk IN  0x83     0    2  40 ff
+```
+
+Identical to the first attempt: `40 ff 03` accepted, the `0x84` URB pending the
+full 120 seconds, unlinked by our own timeout at `-2`, zero bytes from the chip.
+
+**Whether the sensor was touched during this window is not known.** The user
+intended to be at the sensor. A touch produces no record in this capture or
+anywhere else the agent can read, so the run cannot distinguish "touched and the
+chip stayed silent" from "not touched". It is recorded as undetermined. Q-002
+stays open, and no conclusion is drawn about the `0x84` path.
+
+Two things this run does show:
+
+- The `abort` fix is visible on the wire. At t+125.761 `40 ff 02` goes out with
+  no IN URB submitted after it. The earlier runs submitted one and waited.
+- The chip is responsive immediately afterwards. `finger_info 0` went out 13 ms
+  after `abort` and answered `40 ff` in under a millisecond, from the same
+  process, on the same claim. A 120 second unanswered `verify` does not wedge
+  the session.
+
+### Limit of this method
+
+usbmon records URBs, not bus-level NAKs. If 0c90 answered `verify` on an
+endpoint with no URB pending, the device would be NAKed and **nothing would
+appear in the capture**. So these captures cannot rule out a reply arriving on
+an endpoint other than `0x84`. Only `0x84` had a read posted.
