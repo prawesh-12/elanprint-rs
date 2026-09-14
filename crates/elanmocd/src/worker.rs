@@ -9,6 +9,8 @@
 //! one, so the host file can never drive a flash erase. See D-023.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use elanmoc_proto::{Command, Enroll, EnrollAction, Response, SlotState, Status};
@@ -150,13 +152,56 @@ impl OpSink {
     }
 }
 
-/// Proof that an operation holds the busy flag.
+/// Claim and busy flags, readable without locking the worker.
 ///
-/// Only [`Worker::try_begin`] makes one and only [`Worker::finish`] consumes
-/// one, so the flag is taken exactly once per operation. Taking it twice was
-/// what stopped every spawned enroll and verify from reaching the device.
+/// A device operation holds the worker mutex for its whole run, which can be
+/// minutes of waiting for a finger. Any D-Bus property getter that locked the
+/// worker would block for exactly that long, and a client that read one
+/// between `EnrollStart` and subscribing to `EnrollStatus` would never
+/// subscribe. See D-028.
+#[derive(Debug, Default)]
+pub struct OpState {
+    claimed: AtomicBool,
+    busy: AtomicBool,
+}
+
+impl OpState {
+    /// Whether a user holds the claim.
+    pub fn is_claimed(&self) -> bool {
+        self.claimed.load(Ordering::Acquire)
+    }
+
+    /// Whether an enroll or verify is running.
+    pub fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::Acquire)
+    }
+
+    /// Take the busy flag for one operation. Never touches the worker.
+    pub fn try_begin(self: &Arc<Self>) -> Result<OpToken, WorkerError> {
+        if !self.is_claimed() {
+            return Err(WorkerError::Unclaimed);
+        }
+        self.busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| WorkerError::Busy)?;
+        Ok(OpToken(self.clone()))
+    }
+}
+
+/// Proof that an operation holds the busy flag. Clears it on drop.
+///
+/// Only [`OpState::try_begin`] makes one, so the flag is taken exactly once
+/// per operation and released even on an early return or a panic. Taking it
+/// twice was what stopped every spawned enroll and verify from reaching the
+/// device.
 #[derive(Debug)]
-pub struct OpToken(());
+pub struct OpToken(Arc<OpState>);
+
+impl Drop for OpToken {
+    fn drop(&mut self) {
+        self.0.busy.store(false, Ordering::Release);
+    }
+}
 
 /// Proof that a person asked for one named finger to be erased.
 ///
@@ -196,9 +241,9 @@ impl DeleteIntent {
 pub struct Worker<T: Transport> {
     usb: Option<T>,
     claimed: Option<String>,
-    busy: bool,
     armed: bool,
     store_path: PathBuf,
+    state: Arc<OpState>,
 }
 
 impl<T: Transport> Worker<T> {
@@ -207,42 +252,20 @@ impl<T: Transport> Worker<T> {
         Self {
             usb: None,
             claimed: None,
-            busy: false,
             armed: false,
             store_path,
+            state: Arc::new(OpState::default()),
         }
     }
 
-    /// Whether a user currently holds the claim.
-    pub fn is_claimed(&self) -> bool {
-        self.claimed.is_some()
-    }
-
-    /// Whether an enroll or verify is running.
-    pub fn is_busy(&self) -> bool {
-        self.busy
+    /// The flags the D-Bus layer reads without locking this worker.
+    pub fn state(&self) -> Arc<OpState> {
+        self.state.clone()
     }
 
     /// The claiming user, if any.
     pub fn claimed_user(&self) -> Option<String> {
         self.claimed.clone()
-    }
-
-    /// Take the busy flag for one operation.
-    pub fn try_begin(&mut self) -> Result<OpToken, WorkerError> {
-        if self.usb.is_none() {
-            return Err(WorkerError::Unclaimed);
-        }
-        if self.busy {
-            return Err(WorkerError::Busy);
-        }
-        self.busy = true;
-        Ok(OpToken(()))
-    }
-
-    /// Give the busy flag back.
-    pub fn finish(&mut self, _op: OpToken) {
-        self.busy = false;
     }
 
     fn usb(&self) -> Result<&T, WorkerError> {
@@ -257,7 +280,7 @@ impl<T: Transport> Worker<T> {
     ///
     /// Re-claim by the same user re-arms. A different user gets `Busy`.
     pub async fn claim(&mut self, user: String) -> Result<(), WorkerError> {
-        if self.busy {
+        if self.state.is_busy() {
             return Err(WorkerError::Busy);
         }
         if let Some(other) = self.claimed.as_ref() {
@@ -272,6 +295,7 @@ impl<T: Transport> Worker<T> {
         self.send_arm().await?;
         self.armed = true;
         self.claimed = Some(user);
+        self.state.claimed.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -321,7 +345,7 @@ impl<T: Transport> Worker<T> {
         self.abort_session().await;
         self.armed = false;
         self.claimed = None;
-        self.busy = false;
+        self.state.claimed.store(false, Ordering::Release);
     }
 
     /// Drop the held handle for suspend. Keeps the claim and the store.
@@ -329,7 +353,6 @@ impl<T: Transport> Worker<T> {
         self.abort_session().await;
         self.usb = None;
         self.armed = false;
-        self.busy = false;
     }
 
     /// Mark resume. Drops any stale handle without touching USB.

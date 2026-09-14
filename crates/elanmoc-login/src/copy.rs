@@ -7,6 +7,7 @@ pub const READER_NOT_FOUND: &str = "reader not found";
 pub const PICK_ENROLL: &str = "pick a finger to enrol";
 pub const PICK_VERIFY: &str = "pick a finger to verify";
 pub const TOUCH: &str = "touch the sensor";
+pub const TOUCH_FIRST: &str = "touch the sensor to begin";
 pub const CONNECT: &str = "connect";
 pub const LOGIN: &str = "login with fingerprint";
 pub const TRY_AGAIN: &str = "try again";
@@ -31,5 +32,14 @@ pub fn enroll_failure(result: &str) -> String {
         "enroll-disconnected" => "the reader disconnected".to_string(),
         "enroll-failed" | "enroll-unknown-error" => "enrol failed, see log".to_string(),
         other => format!("enrol ended: {other}"),
+    }
+}
+
+/// What to ask for after `done` of `total` samples landed.
+pub fn touch_again(done: u8, total: u8) -> String {
+    if done >= total {
+        "saving".to_string()
+    } else {
+        format!("good, touch again ({} to go)", total.saturating_sub(done))
     }
 }

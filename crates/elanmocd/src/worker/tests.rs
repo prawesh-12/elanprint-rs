@@ -5,6 +5,7 @@
 //! from reading the code. No hardware, no device.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -139,7 +140,16 @@ fn claimed(fake: Fake, path: PathBuf) -> Worker<Fake> {
     w.usb = Some(fake);
     w.claimed = Some("u".to_string());
     w.armed = true;
+    w.state.claimed.store(true, Ordering::Release);
     w
+}
+
+/// Take the busy flag the way the D-Bus layer does.
+fn begin(w: &Worker<Fake>) -> OpToken {
+    match w.state().try_begin() {
+        Ok(op) => op,
+        Err(e) => panic!("begin: {e}"),
+    }
 }
 
 fn enrolled_num(count: u8) -> Vec<u8> {
@@ -171,10 +181,7 @@ async fn empty_store_never_hands_out_an_occupied_slot() {
         vec![0x40, 0x00],          // first enroll sample, then the queue dries up
     ]);
     let mut w = claimed(fake.clone(), path.clone());
-    let op = match w.try_begin() {
-        Ok(op) => op,
-        Err(e) => panic!("begin: {e}"),
-    };
+    let op = begin(&w);
     let (tx, mut rx) = mpsc::channel(32);
     let sink = OpSink::new(OpKind::Enroll, tx);
     let _ = w
@@ -214,10 +221,7 @@ async fn a_disagreeing_store_never_erases() {
         vec![0x40, 0x00],
     ]);
     let mut w = claimed(fake.clone(), path.clone());
-    let op = match w.try_begin() {
-        Ok(op) => op,
-        Err(e) => panic!("begin: {e}"),
-    };
+    let op = begin(&w);
     let (tx, mut rx) = mpsc::channel(32);
     let _ = w
         .enroll(
@@ -227,12 +231,9 @@ async fn a_disagreeing_store_never_erases() {
             CancellationToken::new(),
         )
         .await;
-    w.finish(op);
+    drop(op);
 
-    let op = match w.try_begin() {
-        Ok(op) => op,
-        Err(e) => panic!("begin: {e}"),
-    };
+    let op = begin(&w);
     let (vtx, mut vrx) = mpsc::channel(32);
     let _ = w
         .verify(
@@ -242,7 +243,7 @@ async fn a_disagreeing_store_never_erases() {
             CancellationToken::new(),
         )
         .await;
-    w.finish(op);
+    drop(op);
     let _ = w.list("u");
     w.release().await;
 
@@ -272,10 +273,7 @@ async fn a_failed_enroll_erases_nothing() {
         vec![0x40, 0xdd], // slot limit, a hard failure mid-loop
     ]);
     let mut w = claimed(fake.clone(), path.clone());
-    let op = match w.try_begin() {
-        Ok(op) => op,
-        Err(e) => panic!("begin: {e}"),
-    };
+    let op = begin(&w);
     let (tx, mut rx) = mpsc::channel(32);
     let result = w
         .enroll(
@@ -302,10 +300,7 @@ async fn a_cancelled_enroll_erases_nothing() {
     write_store(&path, &[]);
     let fake = Fake::new(vec![enrolled_num(1), vec![0x40, 0xff]]);
     let mut w = claimed(fake.clone(), path.clone());
-    let op = match w.try_begin() {
-        Ok(op) => op,
-        Err(e) => panic!("begin: {e}"),
-    };
+    let op = begin(&w);
     let cancel = CancellationToken::new();
     cancel.cancel();
     let (tx, mut rx) = mpsc::channel(32);
@@ -378,10 +373,7 @@ async fn a_duplicate_finger_name_is_refused() {
     write_store(&path, &[("u", "left-thumb", 2)]);
     let fake = Fake::new(vec![enrolled_num(1)]);
     let mut w = claimed(fake.clone(), path.clone());
-    let op = match w.try_begin() {
-        Ok(op) => op,
-        Err(e) => panic!("begin: {e}"),
-    };
+    let op = begin(&w);
     let (tx, mut rx) = mpsc::channel(32);
     let result = w
         .enroll(
@@ -424,11 +416,8 @@ async fn the_busy_flag_is_taken_once_per_op() {
     write_store(&path, &[]);
     let fake = Fake::new(vec![enrolled_num(0), vec![0x40, 0xff], vec![0x40, 0x00]]);
     let mut w = claimed(fake.clone(), path.clone());
-    let op = match w.try_begin() {
-        Ok(op) => op,
-        Err(e) => panic!("begin: {e}"),
-    };
-    assert!(w.try_begin().is_err(), "a second op is refused");
+    let op = begin(&w);
+    assert!(w.state().try_begin().is_err(), "a second op is refused");
     let (tx, mut rx) = mpsc::channel(32);
     let _ = w
         .enroll(
@@ -464,10 +453,7 @@ async fn every_enroll_error_emits_a_terminal_status() {
         write_store(&path, &[]);
         let fake = Fake::new(replies);
         let mut w = claimed(fake, path.clone());
-        let op = match w.try_begin() {
-            Ok(op) => op,
-            Err(e) => panic!("begin: {e}"),
-        };
+        let op = begin(&w);
         let (tx, mut rx) = mpsc::channel(32);
         let result = w
             .enroll(
@@ -509,10 +495,7 @@ async fn every_verify_error_emits_a_terminal_status() {
         write_store(&path, &entries);
         let fake = Fake::new(Vec::new());
         let mut w = claimed(fake, path.clone());
-        let op = match w.try_begin() {
-            Ok(op) => op,
-            Err(e) => panic!("begin: {e}"),
-        };
+        let op = begin(&w);
         let (tx, mut rx) = mpsc::channel(32);
         let result = w
             .verify(
@@ -581,10 +564,7 @@ async fn an_enrol_reads_every_reply_on_the_right_endpoint() {
     replies.push(vec![0x40, 0x00]); // commit
     let fake = Fake::new(replies);
     let mut w = claimed(fake.clone(), path.clone());
-    let op = match w.try_begin() {
-        Ok(op) => op,
-        Err(e) => panic!("begin: {e}"),
-    };
+    let op = begin(&w);
     let (tx, mut rx) = mpsc::channel(32);
     if let Err(e) = w
         .enroll(
@@ -624,5 +604,91 @@ async fn an_enrol_reads_every_reply_on_the_right_endpoint() {
             done: true,
         })
     );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Property flags stay readable while an operation holds the worker.
+///
+/// The D-Bus property getters used to lock the worker, which a running op
+/// holds for as long as it waits for a finger. A client that read
+/// `num-enroll-stages` between `EnrollStart` and subscribing to
+/// `EnrollStatus` blocked there and never subscribed, so the enrol ran on the
+/// chip with nothing listening. The UI sat on "touch the sensor" forever.
+#[tokio::test]
+async fn flags_are_readable_while_the_worker_is_held() {
+    let path = store_path("flags");
+    write_store(&path, &[("u", "left-index-finger", 0)]);
+    let fake = Fake::new(Vec::new());
+    let worker = Arc::new(tokio::sync::Mutex::new(claimed(fake, path.clone())));
+    let state = worker.lock().await.state();
+    let op = match state.try_begin() {
+        Ok(op) => op,
+        Err(e) => panic!("begin: {e}"),
+    };
+
+    assert!(state.is_claimed());
+    assert!(state.is_busy(), "the op holds the flag");
+
+    let held = worker.clone();
+    let guard = tokio::spawn(async move {
+        let _w = held.lock().await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The worker is locked here. Reading the flags must not wait for it.
+    let read = tokio::time::timeout(Duration::from_millis(50), async {
+        (state.is_claimed(), state.is_busy())
+    })
+    .await;
+    match read {
+        Ok((claimed, busy)) => {
+            assert!(claimed, "claim flag readable while the worker is held");
+            assert!(busy, "busy flag readable while the worker is held");
+        }
+        Err(_) => panic!("reading the flags blocked on the worker mutex"),
+    }
+
+    // A second op is refused straight away, not queued behind the worker.
+    let second = tokio::time::timeout(Duration::from_millis(50), async {
+        state.try_begin().is_err()
+    })
+    .await;
+    match second {
+        Ok(refused) => assert!(refused, "a second op gets Busy"),
+        Err(_) => panic!("try_begin blocked on the worker mutex"),
+    }
+
+    if guard.await.is_err() {
+        panic!("guard task works");
+    }
+    drop(op);
+    assert!(!state.is_busy(), "dropping the token clears the flag");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The token clears the busy flag even when the operation returns early.
+#[tokio::test]
+async fn an_early_return_still_releases_the_busy_flag() {
+    let path = store_path("early");
+    write_store(&path, &[]);
+    let fake = Fake::new(Vec::new());
+    let mut w = claimed(fake, path.clone());
+    let state = w.state();
+    {
+        let op = begin(&w);
+        let (tx, _rx) = mpsc::channel(32);
+        let result = w
+            .enroll(
+                &op,
+                "not-a-finger".to_string(),
+                OpSink::new(OpKind::Enroll, tx),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err(), "the enrol was refused");
+    }
+    assert!(!state.is_busy(), "the flag is clear after the early return");
+    assert!(state.try_begin().is_ok(), "the next op can start");
     let _ = std::fs::remove_file(&path);
 }

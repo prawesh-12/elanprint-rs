@@ -16,7 +16,7 @@ use zbus::{interface, Connection};
 mod status;
 mod worker;
 
-use worker::{DeleteIntent, OpEvent, OpKind, OpSink, OpToken, Worker, WorkerError};
+use worker::{DeleteIntent, OpEvent, OpKind, OpSink, OpState, OpToken, Worker, WorkerError};
 
 /// The daemon always drives the real sensor. Tests drive a fake transport.
 type UsbWorker = Worker<elanmoc_usb::Device>;
@@ -72,14 +72,18 @@ impl Manager {
 
 struct Device {
     worker: Arc<Mutex<UsbWorker>>,
+    state: Arc<OpState>,
     op_cancel: Arc<Mutex<Option<CancellationToken>>>,
 }
 
 impl Device {
-    /// Take the busy flag once, here. The worker never takes it again.
+    /// Take the busy flag once, here, without locking the worker.
+    ///
+    /// A running operation holds the worker for as long as it waits for a
+    /// finger, so locking here would make a second call hang instead of
+    /// answering `AlreadyInUse`.
     async fn start_op(&self) -> Result<(OpToken, CancellationToken), FprintError> {
-        let mut worker = self.worker.lock().await;
-        let op = worker.try_begin()?;
+        let op = self.state.try_begin()?;
         let cancel = CancellationToken::new();
         *self.op_cancel.lock().await = Some(cancel.clone());
         Ok((op, cancel))
@@ -150,7 +154,7 @@ impl Device {
                 if let Err(e) = w.verify(&op, finger_name, sink, cancel).await {
                     tracing::warn!("verify ended: {e}");
                 }
-                w.finish(op);
+                drop(op);
             }
             *ender.lock().await = None;
         });
@@ -192,7 +196,7 @@ impl Device {
                 if let Err(e) = w.enroll(&op, finger_name, sink, cancel).await {
                     tracing::warn!("enroll ended: {e}");
                 }
-                w.finish(op);
+                drop(op);
             }
             *ender.lock().await = None;
         });
@@ -224,7 +228,7 @@ impl Device {
 
     #[zbus(property, name = "num-enroll-stages")]
     async fn num_enroll_stages(&self) -> i32 {
-        if self.worker.lock().await.is_claimed() {
+        if self.state.is_claimed() {
             elanmoc_proto::TOTAL_ENROLL_ATTEMPTS as i32
         } else {
             -1
@@ -238,7 +242,7 @@ impl Device {
 
     #[zbus(property, name = "finger-needed")]
     async fn finger_needed(&self) -> bool {
-        self.worker.lock().await.is_busy()
+        self.state.is_busy()
     }
 
     #[zbus(signal)]
@@ -271,7 +275,9 @@ async fn main() -> anyhow::Result<()> {
     let store_path = std::env::var("ELANMOC_STORE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(elanmoc_store::DEFAULT_PATH));
-    let worker = Arc::new(Mutex::new(UsbWorker::new(store_path)));
+    let worker = UsbWorker::new(store_path);
+    let state = worker.state();
+    let worker = Arc::new(Mutex::new(worker));
     let op_cancel: Arc<Mutex<Option<CancellationToken>>> = Arc::new(Mutex::new(None));
 
     let session = std::env::var("ELANMOC_BUS").is_ok_and(|v| v == "session");
@@ -286,6 +292,7 @@ async fn main() -> anyhow::Result<()> {
             DEVICE_PATH,
             Device {
                 worker: worker.clone(),
+                state: state.clone(),
                 op_cancel: op_cancel.clone(),
             },
         )

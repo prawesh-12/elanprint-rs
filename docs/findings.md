@@ -1016,3 +1016,41 @@ candidate is 1. The store was restored from a copy taken before the reboot.
 
 Recorded as a live confirmation of the precondition, not of the erase: no
 enrol was run in that state.
+
+---
+
+## 2026-09-14 The UI never subscribed: a property getter blocked on the worker
+
+Reported as "why am I not able to enroll from the UI". The daemon log showed
+samples 1, 2 and 3 accepted while the window still read "touch the sensor"
+with eight empty dots. The sensor was working the whole time.
+
+Probed on the session bus, no touch needed. With a claim held and a `verify`
+running, so the spawned task holds the worker mutex:
+
+| Read                        | Before   | After   |
+| --------------------------- | -------- | ------- |
+| `num-enroll-stages`, idle   | `8`      | `8`     |
+| `num-enroll-stages`, running| timeout  | `8`     |
+| `finger-needed`, running    | timeout  | `true`  |
+| second `EnrollStart`        | timeout  | `net.reactivated.Fprint.Error.AlreadyInUse` |
+
+Cause: `EnrollStart` spawns a task that holds `Mutex<Worker>` until the
+operation ends, which is minutes while a finger is awaited. Both property
+getters and `Device::start_op` locked the same mutex.
+
+`elanmoc-login::client::enroll` called `Claim`, `EnrollStart`, then
+`stages()`, then `receive_signal("EnrollStatus")`. The `stages()` call
+blocked on the mutex the enrol itself held, so `receive_signal` was never
+reached. The enrol ran on the chip with no subscriber. Deadlock by data
+dependency, not by lock ordering: nothing was waiting on the UI, so the chip
+sequence completed normally while the window heard nothing.
+
+Second fault found by reading, not observed: the client subscribed after
+starting. A terminal answer such as `enroll-duplicate` arrives about a
+millisecond after `EnrollStart` and would have been missed. D-028 masked it
+because the client never got that far.
+
+Fixes are D-028, D-029 and D-030. `OpState` keeps `claimed` and `busy` as
+atomics outside the worker lock, `OpToken` clears busy on drop, and both
+client operations subscribe before they start.

@@ -154,16 +154,19 @@ impl FingerprintClient {
     ) -> Result<(), ClientError> {
         let proxy = self.device_proxy().await?;
         proxy.call::<_, _, ()>("Claim", &(user)).await?;
-        let started = proxy.call::<_, _, ()>("EnrollStart", &(finger)).await;
-        if let Err(e) = started {
-            let _ = proxy.call::<_, _, ()>("Release", &()).await;
-            return Err(ClientError::Dbus(e));
-        }
+        // Subscribe and read the stage count before the op starts. Both are
+        // D-Bus round trips, and a reply that arrives before the stream
+        // exists is gone.
         let total = match self.stages().await {
             Ok(n) if n > 0 => n as u8,
             _ => 0,
         };
         let mut statuses = proxy.receive_signal("EnrollStatus").await?;
+        let started = proxy.call::<_, _, ()>("EnrollStart", &(finger)).await;
+        if let Err(e) = started {
+            let _ = proxy.call::<_, _, ()>("Release", &()).await;
+            return Err(ClientError::Dbus(e));
+        }
         let mut done: u8 = 0;
         let outcome = self
             .drive_enroll(&mut statuses, total, &mut done, &tx, &cancel)
@@ -253,14 +256,15 @@ impl FingerprintClient {
 
         let proxy = self.device_proxy().await?;
         proxy.call::<_, _, ()>("Claim", &(user)).await?;
+        // Subscribe before starting: a terminal reply can arrive in under a
+        // millisecond, and a stream created after it never sees it.
+        let mut statuses = proxy.receive_signal("VerifyStatus").await?;
+        let mut selected = proxy.receive_signal("VerifyFingerSelected").await?;
         let started = proxy.call::<_, _, ()>("VerifyStart", &(finger)).await;
         if let Err(e) = started {
             let _ = proxy.call::<_, _, ()>("Release", &()).await;
             return Err(ClientError::Dbus(e));
         }
-
-        let mut statuses = proxy.receive_signal("VerifyStatus").await?;
-        let mut selected = proxy.receive_signal("VerifyFingerSelected").await?;
         let outcome = self
             .drive(&mut session, &mut statuses, &mut selected, &tx, &cancel)
             .await;

@@ -205,7 +205,7 @@ impl LoginApp {
         self.enroll_cancel = Some(cancel);
         self.enroll_done = 0;
         self.enroll_tone = EnrollTone::Idle;
-        self.enroll_status = copy::TOUCH.to_string();
+        self.enroll_status = copy::TOUCH_FIRST.to_string();
     }
 
     fn cancel_enroll(&mut self) {
@@ -301,19 +301,18 @@ impl LoginApp {
                     AuthEvent::Prompt(text) => self.status = text,
                     AuthEvent::Retry(hint) => {
                         self.status = hint;
-                        self.fx.flash(egui::Color32::from_rgb(255, 191, 0));
+                        self.fx.ripple();
                     }
                     AuthEvent::Finger(finger) => {
                         self.status = format!("verifying {finger}");
                     }
                     AuthEvent::Granted => {
                         self.screen = Screen::Granted;
-                        self.fx.flash(egui::Color32::GREEN);
+                        self.fx.ripple();
                         done = true;
                     }
                     AuthEvent::Denied(_) => {
                         self.screen = Screen::Denied;
-                        self.fx.flash(egui::Color32::RED);
                         self.fx.shake();
                         done = true;
                     }
@@ -349,20 +348,23 @@ impl LoginApp {
                         if t > 0 {
                             self.enroll_total = t;
                         }
-                        self.enroll_status =
-                            format!("{} of {}", self.enroll_done, self.enroll_total);
+                        self.enroll_status = copy::touch_again(
+                            self.enroll_done,
+                            self.enroll_total,
+                        );
                         self.enroll_tone = EnrollTone::Idle;
-                        self.fx.flash(egui::Color32::GREEN);
+                        self.fx.ripple();
                     }
                     EnrollEvent::Retry(hint) => {
                         self.enroll_status = hint;
                         self.enroll_tone = EnrollTone::Hint;
-                        self.fx.flash(egui::Color32::from_rgb(255, 191, 0));
+                        self.fx.ripple();
                     }
                     EnrollEvent::Completed => {
+                        self.enroll_done = self.enroll_total;
                         self.enroll_status = format!("{} enrolled", self.enroll_finger);
                         self.enroll_tone = EnrollTone::Done;
-                        self.fx.flash(egui::Color32::GREEN);
+                        self.fx.ripple();
                         done = true;
                         need_refresh = true;
                     }
@@ -418,6 +420,7 @@ impl eframe::App for LoginApp {
             self.fx.set_pulse(want);
             self.pulse = want;
         }
+        self.fx.set_sweep(active);
         let now = Instant::now();
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
@@ -433,7 +436,7 @@ impl eframe::App for LoginApp {
             });
         });
         if self.fx.fast_animating(now) {
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
         } else if active || self.pending.is_some() || self.list_pending.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
@@ -484,48 +487,123 @@ fn header(ui: &mut egui::Ui, app: &LoginApp) {
     });
 }
 
-/// The fingerprint mark and the one status line.
+/// The fingerprint mark, the progress ring and the one status line.
+///
+/// The mark is the feedback surface: ridges light one per accepted sample,
+/// a ripple fires on every reply the chip sends, and a scan band runs while
+/// the sensor is waiting for a finger.
 fn stage(ui: &mut egui::Ui, app: &LoginApp, now: Instant) {
     let dimmed = match app.mode {
         Mode::Verify => matches!(app.screen, Screen::Disconnected | Screen::Locked),
         Mode::Enroll => app.client.is_none(),
     };
+    let waiting = match app.mode {
+        Mode::Verify => app.events.is_some(),
+        Mode::Enroll => app.enroll_events.is_some(),
+    };
+    let good = egui::Color32::from_rgb(64, 200, 122);
+    let warn = egui::Color32::from_rgb(255, 191, 0);
+    let bad = egui::Color32::from_rgb(232, 86, 86);
+
     let base = if dimmed {
         ui.visuals().weak_text_color()
     } else {
         ui.visuals().strong_text_color()
     };
-    let mut mark = if dimmed {
-        base
-    } else {
-        base.gamma_multiply(app.fx.pulse_alpha(now))
+    let accent = match app.mode {
+        Mode::Verify => match app.screen {
+            Screen::Granted => good,
+            Screen::Denied | Screen::Locked => bad,
+            _ => ui.visuals().hyperlink_color,
+        },
+        Mode::Enroll => match app.enroll_tone {
+            EnrollTone::Done => good,
+            EnrollTone::Error => bad,
+            EnrollTone::Hint => warn,
+            EnrollTone::Idle => ui.visuals().hyperlink_color,
+        },
     };
-    if let Some(flash) = app.fx.flash_now(now) {
-        mark = flash;
-    }
-    let show_check = match app.mode {
-        Mode::Verify => matches!(app.screen, Screen::Granted),
-        Mode::Enroll => {
-            app.enroll_tone == EnrollTone::Done && app.enroll_events.is_none()
-        }
+
+    let outcome = match app.mode {
+        Mode::Verify => match app.screen {
+            Screen::Granted => Some(true),
+            Screen::Denied => Some(false),
+            _ => None,
+        },
+        Mode::Enroll if app.enroll_events.is_none() => match app.enroll_tone {
+            EnrollTone::Done => Some(true),
+            EnrollTone::Error => Some(false),
+            _ => None,
+        },
+        Mode::Enroll => None,
     };
+
+    let (done, total) = match app.mode {
+        Mode::Enroll => (app.enroll_done, app.enroll_total.max(1)),
+        Mode::Verify => (0, 1),
+    };
+
     let dx = app.fx.shake_dx(now);
+    let size = 148.0;
     ui.vertical_centered(|ui| {
         ui.horizontal(|ui| {
             ui.add_space(dx);
-            if show_check {
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
-                icon::check(ui, rect, mark);
-            } else {
-                let _ = icon::fingerprint(ui, 64.0, mark);
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+            let inner = rect.shrink(size * 0.13);
+            if app.mode == Mode::Enroll && app.client.is_some() {
+                icon::ring(
+                    ui,
+                    rect.shrink(size * 0.03),
+                    done,
+                    total,
+                    ui.visuals().weak_text_color().gamma_multiply(0.35),
+                    accent,
+                );
+            }
+            match outcome {
+                Some(true) => icon::check(ui, inner, good),
+                Some(false) => icon::cross(ui, inner, bad),
+                None => {
+                    let mut mark = icon::Mark::new(inner.width(), base, accent);
+                    mark.lit = done.min(total);
+                    mark.total = total;
+                    mark.alpha = if dimmed {
+                        0.5
+                    } else {
+                        app.fx.pulse_alpha(now)
+                    };
+                    mark.ripple = app.fx.ripple_now(now);
+                    mark.sweep = if waiting { app.fx.sweep_now(now) } else { None };
+                    draw_mark_at(ui, inner, &mark);
+                }
             }
         });
-        ui.label(egui::RichText::new(stage_line(app)).size(19.0));
-        if app.mode == Mode::Enroll && app.enroll_total > 0 && app.client.is_some() {
-            dots(ui, app.enroll_done, app.enroll_total);
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(stage_line(app))
+                .size(19.0)
+                .color(match app.enroll_tone {
+                    EnrollTone::Error if app.mode == Mode::Enroll => bad,
+                    EnrollTone::Hint if app.mode == Mode::Enroll => warn,
+                    _ => ui.visuals().text_color(),
+                }),
+        );
+        if app.mode == Mode::Enroll && app.client.is_some() && total > 1 {
+            ui.label(
+                egui::RichText::new(format!("{done} of {total} touches"))
+                    .small()
+                    .weak(),
+            );
+            dots(ui, done, total);
         }
     });
+}
+
+/// Draw the mark inside an already allocated rect.
+fn draw_mark_at(ui: &mut egui::Ui, rect: egui::Rect, mark: &icon::Mark) {
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    let _ = icon::fingerprint(&mut child, mark);
 }
 
 /// The single status line for the visible mode.
