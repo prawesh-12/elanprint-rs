@@ -68,9 +68,9 @@ Not used by this driver. It may be how the Windows WBF stack binds. Reading the 
 | `finger_info`              | `40 ff 12`                | 4       | 2 or 70 | `0x83` | no                     | **confirmed** |
 | `verify`                   | `40 ff 03`                | 3       | 2       | `0x84` | no                     | **confirmed** |
 | `abort`                    | `40 ff 02`                | 3       | 2       | `0x83` | no                     | documented |
-| `enroll`                   | `40 ff 01`                | 7       | 2       | `0x84` | writes flash           | documented |
-| `check_enrolled_collision` | `40 ff 10`                | 3       | 3       | `0x83` | no                     | documented |
-| `commit`                   | `40 ff 11`                | 72      | 2       | `0x83` | **writes flash** | documented |
+| `enroll`                   | `40 ff 01`                | 7       | 2       | `0x84` | writes flash           | **confirmed** |
+| `check_enrolled_collision` | `40 ff 10`                | 3       | 3       | `0x83` | no                     | **confirmed** |
+| `commit`                   | `40 ff 11`                | 72      | 2       | `0x83` | **writes flash** | **confirmed** |
 | `delete`                   | `40 ff 05`                | 5       | 2       | `0x83` | **erases**       | documented |
 | `delete_subsid`            | `40 ff 13`                | 72      | 2       | `0x83` | **erases**       | documented |
 | `wipe_all`                 | `40 ff 99`                | 3       | 0       | none     | **ERASES ALL**   | documented |
@@ -134,9 +134,16 @@ over three silent runs and one successful one, all captured. See
 
 Payload is 4 bytes: `new_finger_id`, `total_attempts`, `attempts_done`, `0`. The source uses 8 total attempts. Called in a loop, once per touch. Byte 1 of the response is 0 on a good sample, otherwise an error code. `0xdd` means the slot limit is reached, and the loop must stop rather than retry.
 
+**Observed on 0c90, 2026-09-14:** counters 00 to 07 each answered `40 00` on
+`0x84` in one armed claim. Retries `0x43`, `0x44`, `0x41` held the counter and
+were resent unchanged. A 12.7 second mid-loop pause needed no re-arm.
+
 ### `check_enrolled_collision`
 
 Run after the last sample, before commit. 3 byte response. If byte 1 is nonzero, byte 2 holds the id of the finger this one collides with, and enrollment must abort.
+
+**Observed on 0c90, 2026-09-14:** `40 00 ff`. Byte 1 is 0, no clash. Byte 2 is
+`0xff` anyway, so byte 2 alone means nothing.
 
 ### `commit`
 
@@ -150,6 +157,9 @@ The sub id byte is computed as `0xf0 | (finger_id + 5)`.
 2. `new_finger_id` is taken from the *count* of currently enrolled fingers. If slots are not allocated densely, for example after a delete, the new id can collide with an existing one. Check `finger_info` for every slot and pick a genuinely free id instead of using the count.
 
 Record the exact bytes the chip returns after commit, including anything that arrives after the 2 bytes you expected, and put it in `findings.md`.
+
+**Observed on 0c90, 2026-09-14:** `40 00` on `0x83`, 102 ms after the write.
+A 500 ms trailing read got nothing. Clean, no cancel needed.
 
 ### `delete`
 
@@ -241,7 +251,7 @@ These opcodes appear in the source's notes. They are recorded here so nobody reu
 | `fw_ver` | 2 bytes, major then minor | `01 08` | Matches. Agrees with `bcdDevice 0108`. |
 | `sensor_size` | 4 bytes, width `b0+1`, height `b2+1` | `4f 00 4f 00`, 80 x 80 | Matches, off-by-one confirmed. |
 | `enrolled_num` | byte 1 is the count | `40 00`, count 0 | Matches. Byte 0 echoes the command's `0x40`. |
-| `finger_info` | 70 byte record per slot | **2 bytes, `40 ff`**, ids 0 to 15 | **Differs.** 2 byte status form for an empty slot. `0xff` is "empty", not the source's "stuck sensor": the documented remedy (`verify`) was run and changed nothing. |
+| `finger_info` | 70 byte record per slot | **2 bytes, `40 ff`**, ids 0 to 15 | **Differs.** 2 byte status form for an empty slot. `0xff` is "empty", not the source's "stuck sensor": the documented remedy (`verify`) was run and changed nothing. After enrolling slot 0 (`enrolled_num` 1) the slot still answers `40 ff`: no scan can locate the occupied slot. |
 | `verify` | `40 ff 03`, reply on `0x84` | `40 fd` on `0x84` | Matches, **but** needs `enrolled_num` sent first on the same claim or it never answers. Not in the source. See "The arming rule". |
 
 ---

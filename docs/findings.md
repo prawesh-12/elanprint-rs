@@ -613,3 +613,57 @@ No writes were made and nothing was enrolled.
 
 The only route to the limit that `docs/protocol.md` offers is enrolling until
 `0xdd`, which fills the chip. Not done, on the user's instruction.
+
+---
+
+## 2026-09-14 GATE 3a: first enroll, slot 0, commit is clean
+
+One claim, armed once with `enrolled_num`, never re-armed. Capture
+`/tmp/enroll3a.pcapng` (bus 1, device 2, dumpcap as uid 1000) and
+`RUST_LOG=elanmoc_usb=debug` log agree on every byte. Whole run took 22 seconds.
+
+Method note, stated plainly: the user was at the sensor and touching throughout
+(move-hint retries and sub-second captures prove a live finger), but no
+per-touch handshake message was exchanged for any of the nine touches, so every
+touch in this run is logged as **unconfirmed** per D-011. The commit, collision
+and count evidence below does not depend on touch timing.
+
+Sequence on the wire:
+
+```
+arm:       OUT 0x01  40 ff 04            IN 0x83  40 00 (count 0)
+slot check: OUT 0x01  40 ff 12 00        IN 0x83  40 ff
+pre-check:  OUT 0x01  40 ff 03            IN 0x84  40 fd (148 ms)
+samples:    OUT 0x01  40 ff 01 00 08 XX 00  (XX = 00..07, one claim)
+            IN 0x84  40 00 x8, plus 40 43, 40 44, 40 41 retries
+collision:  OUT 0x01  40 ff 10            IN 0x83  40 00 ff
+commit:     OUT 0x01  40 ff 11 f5 + 68 zeros (72 bytes)
+                                          IN 0x83  40 00 (102 ms)
+after:      enrolled_num -> 40 01 (was 40 00)
+            finger_info 0 -> 40 ff (still 2 bytes)
+```
+
+Facts:
+
+- **Commit works clean.** `40 00` on `0x83`, 102 ms after the 72 byte write. A
+  500 ms trailing read on `0x83` got nothing (capture shows our own unlink at
+  `-2`). No cancel, no workaround, no second command. The known community bug
+  did not reproduce: the difference from the broken implementations is that this
+  claim was armed with `enrolled_num` at the front and held throughout.
+- **Attempt counters 00 to 07 all accepted.** Three retries (`0x43`, `0x44`,
+  `0x41`) held the counter at 04 and resent the same attempt, exactly as the
+  state machine does. A 12.7 second pause at attempt 04 (finger adjustment)
+  cost nothing: no re-arm, no desync, the next sample answered normally.
+- **Collision reply is `40 00 ff`.** Byte 1 is 0 (no clash), byte 2 is `0xff`.
+  So byte 2 carries `0xff` even when there is no collision, and only a nonzero
+  byte 1 would name a clashing id.
+- **`finger_info` cannot find the enrolled finger.** After commit,
+  `enrolled_num` reads 1 but `finger_info 0` still answers 2 bytes `40 ff`,
+  the same bytes as before anything was enrolled. The Phase 5 warning is now
+  proven live: no slot scan can locate the occupied slot, and sync must use the
+  count, not the records.
+- `total_attempts` 8 completed end to end. The chip never echoes the total back,
+  so 8 stays a working value rather than a confirmed one.
+
+Promotions: `enroll`, `check_enrolled_collision` and `commit` go to `confirmed`
+with the responses above. `total_attempts` 8 is not promoted beyond working.
