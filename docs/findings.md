@@ -669,3 +669,27 @@ Facts:
 
 Promotions: `enroll`, `check_enrolled_collision` and `commit` go to `confirmed`
 with the responses above. `total_attempts` 8 is not promoted beyond working.
+
+---
+
+## 2026-09-14 Phase 4: 10 of 10 verifies match, handshake each run
+
+Ten separate `verify --prime` claims against the enrolled right-index-finger.
+D-011 followed for every run: the run started in the background, the user was
+asked to touch, the reply was read only after the user's message.
+
+All ten answered `40 00` on `0x84`, match on finger id 0. Touch latencies in
+seconds: 6.08, 17.86, 5.20, 4.77, 5.00, 11.92, 5.10, 7.88, 15.03, 48.40.
+
+Two runs do not count and are recorded so the count stays honest:
+
+- One run answered `40 00` after 89.27 seconds with no message from the user.
+  Unconfirmed touch, excluded from the 10.
+- One reject-series run (different finger, expecting `40 fd`) was started and
+  then killed untouched at the user's order before any touch. It sent only the
+  arming read and the verify command. A following `info` returned the earlier
+  values, so the killed wait left no desync.
+
+The template is real: it matches, not just commits. The different-finger
+reject series (10 runs expecting `0xfd`) is still open. Stopped at 10 of 10
+matches on the user's order.
