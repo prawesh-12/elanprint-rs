@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>elanmoc-rs</vendor>
+  <icon_name>fingerprint</icon_name>
+  <action id="net.reactivated.fprint.device.verify">
+    <description>Verify a fingerprint</description>
+    <message>Privileges are required to verify fingerprints.</message>
+    <defaults>
+      <allow_any>auth_self</allow_any>
+      <allow_inactive>auth_self</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+  <action id="net.reactivated.fprint.device.enroll">
+    <description>Enroll a new fingerprint</description>
+    <message>Privileges are required to enroll fingerprints.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+  <action id="net.reactivated.fprint.device.setusername">
+    <description>Access fingerprints of other users</description>
+    <message>Privileges are required to access other users fingerprints.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+</policyconfig>
