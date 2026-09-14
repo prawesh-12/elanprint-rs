@@ -23,7 +23,7 @@ fn main() -> Result<()> {
     let _guard = runtime.enter();
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([420.0, 480.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([480.0, 640.0]),
         ..Default::default()
     };
     let run = eframe::run_native(
