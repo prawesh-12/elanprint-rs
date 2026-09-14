@@ -9,7 +9,7 @@ license = "MIT"
 
 [workspace.dependencies]
 nusb = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 tokio-util = "0.7"
 zbus = { version = "4", features = ["tokio"] }
 serde = { version = "1", features = ["derive"] }

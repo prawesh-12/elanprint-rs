@@ -205,9 +205,27 @@ impl FingerprintClient {
                             let _ = tx.send(EnrollEvent::Failed(result)).await;
                             return Ok(());
                         }
-                        ("enroll-retry-scan" | "enroll-swipe-too-short"
-                        | "enroll-finger-not-centered" | "enroll-remove-and-retry", false) => {
-                            let _ = tx.send(EnrollEvent::Retry(result)).await;
+                        ("enroll-retry-scan", false) => {
+                            let _ = tx.send(EnrollEvent::Retry("try again".to_string())).await;
+                        }
+                        ("enroll-swipe-too-short", false) => {
+                            let _ = tx
+                                .send(EnrollEvent::Retry(
+                                    "hold your finger still and retry".to_string(),
+                                ))
+                                .await;
+                        }
+                        ("enroll-finger-not-centered", false) => {
+                            let _ = tx
+                                .send(EnrollEvent::Retry(
+                                    "centre your finger and retry".to_string(),
+                                ))
+                                .await;
+                        }
+                        ("enroll-remove-and-retry", false) => {
+                            let _ = tx
+                                .send(EnrollEvent::Retry("lift your finger and retry".to_string()))
+                                .await;
                         }
                         _ => {
                             let _ = tx.send(EnrollEvent::Failed(
