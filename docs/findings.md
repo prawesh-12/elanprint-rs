@@ -1091,3 +1091,64 @@ whichever enrolled finger hits.
 Recorded as a protocol fact, not a driver quirk: **`verify` on 0c90 is
 "match against everything", never "match against this finger".** Any caller
 wanting a specific finger has to compare the returned id itself.
+
+---
+
+## 2026-09-15 GATE 7: fingerprint login works, no PAM file was edited
+
+`elanmocd` installed as a system service, running as root, owning
+`net.reactivated.Fprint`. `fprintd.service` masked. Nothing under
+`/etc/pam.d` was changed.
+
+System bus answers before the test:
+
+```
+name               "ELAN 04f3:0c90"
+scan-type          "press"
+num-enroll-stages  -1 unclaimed, 8 claimed
+ListEnrolledFingers prawesh -> ["left-index-finger", "right-index-finger"]
+```
+
+Two passes, both from the journal, not from the screen:
+
+Lock screen unlock, 00:09:00:
+
+```
+gdm-fingerprint][19019]: gkr-pam: no password is available for user
+```
+
+Full greeter login after a logout, 00:10:43 to 00:10:54:
+
+```
+gdm-launch-environment][20119]: session opened for user gdm(uid=120)
+gdm-fingerprint][20672]: pam_unix(gdm-fingerprint:session): session opened for user prawesh(uid=1000)
+gdm-fingerprint][20672]: gkr-pam: couldn't unlock the login keyring.
+```
+
+`pam_gnome_keyring` only runs after `auth required pam_fprintd.so` in
+`/etc/pam.d/gdm-fingerprint`, so reaching those lines proves the fingerprint
+auth passed. The session was opened by the `gdm-fingerprint` service.
+
+### Why no PAM edit was needed
+
+Ubuntu 24.04 ships `/etc/pam.d/gdm-fingerprint` with
+`auth required pam_fprintd.so` and no `@include common-auth`. GNOME Shell
+(`libshell-14.so`) and `gdm-session-worker` select that service by name after
+reading `scan-type` from the Fprint device. Owning the bus name is the whole
+integration. `pam-auth-update` and `common-auth` were never touched, so the
+lockout risk in CLAUDE.md section 7 was never taken on.
+
+### Known consequences, stated not fixed
+
+- The login keyring stays locked after a fingerprint login: there is no
+  password for `pam_gnome_keyring` to unlock it with. Stock fprintd behaves
+  the same way. Saved Wi-Fi and account credentials prompt on first use.
+- `pam_fprintd` claims and does not release: `num-enroll-stages` read 8 after
+  the unlock with no operation running. Harmless while one user owns the
+  machine, because a re-claim by the same user re-arms, but a different user
+  would get `Busy` until the daemon restarts.
+- The daemon holds USB interface 0 for its lifetime once claimed, so
+  `elanmoc-cli` and `tools/run.sh` fail with "Device or resource busy" while
+  the service is running.
+- `sudo` still uses `common-auth`, which `gdm-fingerprint` does not cover, so
+  sudo does not take a fingerprint. Out of scope by the user's order.

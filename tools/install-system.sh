@@ -42,6 +42,9 @@ echo "4. mask fprintd.service"
 systemctl mask fprintd.service
 
 echo "5. start elanmocd"
-systemctl enable --now elanmocd.service
+# restart, not just enable --now: on a reinstall the unit is already active
+# and --now would leave the old binary running.
+systemctl enable elanmocd.service
+systemctl restart elanmocd.service
 sleep 2
 systemctl --no-pager --lines=5 status elanmocd.service || true
