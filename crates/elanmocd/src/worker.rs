@@ -163,6 +163,8 @@ impl OpSink {
 pub struct OpState {
     claimed: AtomicBool,
     busy: AtomicBool,
+    /// Held for the length of a field copy, never across an await.
+    user: std::sync::Mutex<Option<String>>,
 }
 
 impl OpState {
@@ -174,6 +176,21 @@ impl OpState {
     /// Whether an enroll or verify is running.
     pub fn is_busy(&self) -> bool {
         self.busy.load(Ordering::Acquire)
+    }
+
+    /// The claiming user, readable without locking the worker.
+    pub fn claimed_user(&self) -> Option<String> {
+        match self.user.lock() {
+            Ok(held) => held.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn set_claimed_user(&self, user: Option<String>) {
+        match self.user.lock() {
+            Ok(mut held) => *held = user,
+            Err(poisoned) => *poisoned.into_inner() = user,
+        }
     }
 
     /// Take the busy flag for one operation. Never touches the worker.
@@ -263,11 +280,6 @@ impl<T: Transport> Worker<T> {
         self.state.clone()
     }
 
-    /// The claiming user, if any.
-    pub fn claimed_user(&self) -> Option<String> {
-        self.claimed.clone()
-    }
-
     fn usb(&self) -> Result<&T, WorkerError> {
         self.usb.as_ref().ok_or(WorkerError::Unclaimed)
     }
@@ -294,6 +306,7 @@ impl<T: Transport> Worker<T> {
         }
         self.send_arm().await?;
         self.armed = true;
+        self.state.set_claimed_user(Some(user.clone()));
         self.claimed = Some(user);
         self.state.claimed.store(true, Ordering::Release);
         Ok(())
@@ -345,6 +358,7 @@ impl<T: Transport> Worker<T> {
         self.abort_session().await;
         self.armed = false;
         self.claimed = None;
+        self.state.set_claimed_user(None);
         self.state.claimed.store(false, Ordering::Release);
     }
 

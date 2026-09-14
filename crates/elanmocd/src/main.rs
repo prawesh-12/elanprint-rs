@@ -13,6 +13,7 @@ use tracing_subscriber::EnvFilter;
 use zbus::object_server::SignalContext;
 use zbus::{interface, Connection};
 
+mod access;
 mod status;
 mod worker;
 
@@ -74,9 +75,47 @@ struct Device {
     worker: Arc<Mutex<UsbWorker>>,
     state: Arc<OpState>,
     op_cancel: Arc<Mutex<Option<CancellationToken>>>,
+    conn: Connection,
 }
 
 impl Device {
+    /// uid of whoever sent the message, from the bus, not from the message.
+    async fn caller_uid(&self, hdr: &zbus::message::Header<'_>) -> Result<u32, FprintError> {
+        let Some(sender) = hdr.sender() else {
+            return Err(FprintError::PermissionDenied(
+                "message carries no sender".to_string(),
+            ));
+        };
+        let dbus = zbus::fdo::DBusProxy::new(&self.conn)
+            .await
+            .map_err(|e| FprintError::PermissionDenied(format!("cannot reach the bus: {e}")))?;
+        dbus.get_connection_unix_user(sender.to_owned().into())
+            .await
+            .map_err(|e| FprintError::PermissionDenied(format!("cannot read the caller uid: {e}")))
+    }
+
+    /// Refuse callers who are neither root nor the owner of the prints.
+    async fn guard(
+        &self,
+        hdr: &zbus::message::Header<'_>,
+        target: &str,
+    ) -> Result<(), FprintError> {
+        let uid = self.caller_uid(hdr).await?;
+        if access::may_act(uid, access::lookup_uid(target)) {
+            return Ok(());
+        }
+        tracing::warn!("refused uid {uid} acting on {target}'s fingerprints");
+        Err(FprintError::PermissionDenied(format!(
+            "uid {uid} may not act on {target}'s fingerprints"
+        )))
+    }
+
+    /// The claimed user, or a claim error. Never locks the worker.
+    fn claimed_target(&self) -> Result<String, FprintError> {
+        self.state
+            .claimed_user()
+            .ok_or_else(|| FprintError::ClaimDevice("device is not claimed".to_string()))
+    }
     /// Take the busy flag once, here, without locking the worker.
     ///
     /// A running operation holds the worker for as long as it waits for a
@@ -98,7 +137,12 @@ impl Device {
 
 #[interface(name = "net.reactivated.Fprint.Device")]
 impl Device {
-    async fn claim(&mut self, username: String) -> Result<(), FprintError> {
+    async fn claim(
+        &mut self,
+        username: String,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+    ) -> Result<(), FprintError> {
+        self.guard(&hdr, &username).await?;
         self.worker.lock().await.claim(username).await?;
         Ok(())
     }
@@ -113,7 +157,12 @@ impl Device {
         Ok(self.worker.lock().await.list(&username)?)
     }
 
-    async fn delete_enrolled_fingers(&mut self, username: String) -> Result<(), FprintError> {
+    async fn delete_enrolled_fingers(
+        &mut self,
+        username: String,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+    ) -> Result<(), FprintError> {
+        self.guard(&hdr, &username).await?;
         let fingers = self.worker.lock().await.list(&username)?;
         for finger in fingers {
             let intent = DeleteIntent::from_user_request(&username, &finger);
@@ -126,13 +175,13 @@ impl Device {
         Err(FprintError::PermissionDenied("username is required".to_string()))
     }
 
-    async fn delete_enrolled_finger(&mut self, finger_name: String) -> Result<(), FprintError> {
-        let user = self
-            .worker
-            .lock()
-            .await
-            .claimed_user()
-            .ok_or(FprintError::ClaimDevice("device is not claimed".to_string()))?;
+    async fn delete_enrolled_finger(
+        &mut self,
+        finger_name: String,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
+    ) -> Result<(), FprintError> {
+        let user = self.claimed_target()?;
+        self.guard(&hdr, &user).await?;
         let intent = DeleteIntent::from_user_request(&user, &finger_name);
         self.worker.lock().await.delete_finger(&intent).await?;
         Ok(())
@@ -141,8 +190,10 @@ impl Device {
     async fn verify_start(
         &mut self,
         finger_name: String,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
         #[zbus(signal_context)] ctxt: SignalContext<'_>,
     ) -> Result<(), FprintError> {
+        self.guard(&hdr, &self.claimed_target()?).await?;
         let (op, cancel) = self.start_op().await?;
         let (tx, mut rx) = mpsc::channel::<OpEvent>(16);
         let worker = self.worker.clone();
@@ -183,8 +234,10 @@ impl Device {
     async fn enroll_start(
         &mut self,
         finger_name: String,
+        #[zbus(header)] hdr: zbus::message::Header<'_>,
         #[zbus(signal_context)] ctxt: SignalContext<'_>,
     ) -> Result<(), FprintError> {
+        self.guard(&hdr, &self.claimed_target()?).await?;
         let (op, cancel) = self.start_op().await?;
         let (tx, mut rx) = mpsc::channel::<OpEvent>(32);
         let worker = self.worker.clone();
@@ -294,6 +347,7 @@ async fn main() -> anyhow::Result<()> {
                 worker: worker.clone(),
                 state: state.clone(),
                 op_cancel: op_cancel.clone(),
+                conn: conn.clone(),
             },
         )
         .await?;
