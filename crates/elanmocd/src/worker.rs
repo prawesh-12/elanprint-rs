@@ -214,7 +214,7 @@ impl Worker {
     }
 
     async fn verify_loop(
-        &self,
+        &mut self,
         finger: &str,
         tx: &mpsc::Sender<OpEvent>,
         cancel: &CancellationToken,
@@ -310,7 +310,7 @@ impl Worker {
     }
 
     async fn enroll_loop(
-        &self,
+        &mut self,
         finger: &str,
         tx: &mpsc::Sender<OpEvent>,
         cancel: &CancellationToken,
@@ -407,7 +407,7 @@ impl Worker {
     }
 
     async fn commit_round(
-        &self,
+        &mut self,
         commit: &[u8],
         tx: &mpsc::Sender<OpEvent>,
         sm: &mut Enroll,
@@ -462,7 +462,7 @@ impl Worker {
     }
 
     /// First slot without a 70 byte occupied record.
-    async fn free_slot(&self, cancel: &CancellationToken) -> Result<u8, WorkerError> {
+    async fn free_slot(&mut self, cancel: &CancellationToken) -> Result<u8, WorkerError> {
         for id in 0..=MAX_SLOT {
             let raw = self
                 .round(
@@ -497,7 +497,7 @@ impl Worker {
     }
 
     async fn round(
-        &self,
+        &mut self,
         out: &[u8],
         ep: EndpointIn,
         len: usize,
@@ -505,7 +505,7 @@ impl Worker {
         cancel: &CancellationToken,
     ) -> Result<Vec<u8>, WorkerError> {
         let usb = self.usb()?;
-        tokio::select! {
+        let result = tokio::select! {
             biased;
             () = cancel.cancelled() => Err(WorkerError::Cancelled),
             out = usb.cmd(out, ep, len, timeout, cancel) => {
@@ -516,7 +516,11 @@ impl Worker {
                     Err(e) => Err(WorkerError::Usb(e)),
                 }
             }
+        };
+        if matches!(result, Err(WorkerError::Usb(UsbError::Disconnected))) {
+            self.usb = None;
         }
+        result
     }
 
     async fn emit(&self, tx: &mpsc::Sender<OpEvent>, event: OpEvent) {
