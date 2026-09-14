@@ -3,6 +3,10 @@
 //! The claim is held for the daemon's lifetime and armed once, per D-012.
 //! A second client while one operation runs gets `AlreadyInUse`, never a
 //! second claim, since two sessions desync the protocol.
+//!
+//! Erase is reachable from exactly one function, [`Worker::delete_finger`],
+//! and only with a [`DeleteIntent`]. Nothing derived from the store can build
+//! one, so the host file can never drive a flash erase. See D-023.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,8 +14,8 @@ use std::time::Duration;
 use elanmoc_proto::{
     Command, Enroll, EnrollAction, Response, SlotState, Status, TOTAL_ENROLL_ATTEMPTS,
 };
-use elanmoc_store::{MAX_SLOT, Store};
-use elanmoc_usb::{Device, EndpointIn, UsbError};
+use elanmoc_store::Store;
+use elanmoc_usb::{EndpointIn, Transport, UsbError};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -33,6 +37,23 @@ pub enum OpEvent {
     },
 }
 
+impl OpEvent {
+    /// Whether this event ends the operation for the client.
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            Self::EnrollStatus { done, .. } | Self::VerifyStatus { done, .. } => *done,
+            Self::VerifyFingerSelected { .. } => false,
+        }
+    }
+}
+
+/// Which operation a sink reports on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpKind {
+    Enroll,
+    Verify,
+}
+
 /// Everything daemon operations can fail with.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
@@ -52,25 +73,137 @@ pub enum WorkerError {
     NoPrints(String),
     #[error("finger '{0}' is not enrolled")]
     NotEnrolled(String),
+    #[error("finger '{0}' is already enrolled, delete it first")]
+    AlreadyEnrolled(String),
     #[error("enroll failed: {0}")]
     Enroll(#[from] elanmoc_proto::EnrollError),
     #[error("cancelled")]
     Cancelled,
 }
 
+/// The terminal enroll string for any worker error.
+pub fn enroll_terminal(e: &WorkerError) -> &'static str {
+    match e {
+        WorkerError::Enroll(inner) => dbus::enroll_failure(inner),
+        WorkerError::Usb(UsbError::Disconnected) => dbus::enroll::DISCONNECTED,
+        WorkerError::AlreadyEnrolled(_) => dbus::enroll::DUPLICATE,
+        _ => dbus::enroll::FAILED,
+    }
+}
+
+/// The terminal verify string for any worker error.
+pub fn verify_terminal(e: &WorkerError) -> &'static str {
+    match e {
+        WorkerError::Usb(UsbError::Disconnected) => dbus::verify::DISCONNECTED,
+        WorkerError::NoPrints(_) | WorkerError::NotEnrolled(_) => dbus::verify::NO_MATCH,
+        _ => dbus::verify::UNKNOWN_ERROR,
+    }
+}
+
+/// Carries op events and guarantees exactly one terminal event.
+///
+/// [`Worker::enroll`] and [`Worker::verify`] take it by value and close it on
+/// every return path, so no operation can end without telling the client.
+pub struct OpSink {
+    tx: mpsc::Sender<OpEvent>,
+    kind: OpKind,
+    terminal_sent: bool,
+}
+
+impl OpSink {
+    /// A sink for one operation.
+    pub fn new(kind: OpKind, tx: mpsc::Sender<OpEvent>) -> Self {
+        Self {
+            tx,
+            kind,
+            terminal_sent: false,
+        }
+    }
+
+    async fn emit(&mut self, event: OpEvent) {
+        if event.is_terminal() {
+            self.terminal_sent = true;
+        }
+        let _ = self.tx.send(event).await;
+    }
+
+    /// Emit the terminal event for `result` unless one already went out.
+    async fn close(mut self, result: &Result<(), WorkerError>) {
+        if self.terminal_sent {
+            return;
+        }
+        let text = match (self.kind, result) {
+            (OpKind::Enroll, Err(e)) => enroll_terminal(e),
+            (OpKind::Verify, Err(e)) => verify_terminal(e),
+            (OpKind::Enroll, Ok(())) => dbus::enroll::UNKNOWN_ERROR,
+            (OpKind::Verify, Ok(())) => dbus::verify::UNKNOWN_ERROR,
+        };
+        let event = match self.kind {
+            OpKind::Enroll => OpEvent::EnrollStatus {
+                result: text.to_string(),
+                done: true,
+            },
+            OpKind::Verify => OpEvent::VerifyStatus {
+                result: text.to_string(),
+                done: true,
+            },
+        };
+        self.emit(event).await;
+    }
+}
+
+/// Proof that an operation holds the busy flag.
+///
+/// Only [`Worker::try_begin`] makes one and only [`Worker::finish`] consumes
+/// one, so the flag is taken exactly once per operation. Taking it twice was
+/// what stopped every spawned enroll and verify from reaching the device.
+#[derive(Debug)]
+pub struct OpToken(());
+
+/// Proof that a person asked for one named finger to be erased.
+///
+/// The only key to [`Worker::delete_finger`], which is the only function that
+/// sends an erase. It names the user and finger a human chose, so nothing
+/// derived from the store, a reconcile pass or a slot scan can build one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteIntent {
+    user: String,
+    finger: String,
+}
+
+impl DeleteIntent {
+    /// Build one from an explicit delete request made by `user`.
+    pub fn from_user_request(user: &str, finger: &str) -> Self {
+        Self {
+            user: user.to_string(),
+            finger: finger.to_string(),
+        }
+    }
+
+    /// The user who asked.
+    pub fn user(&self) -> &str {
+        &self.user
+    }
+
+    /// The finger they named.
+    pub fn finger(&self) -> &str {
+        &self.finger
+    }
+}
+
 /// Holds the USB claim, the arming and the claimed user.
 ///
 /// `armed` tracks whether this handle answered `enrolled_num` since it was
 /// opened or last aborted. Every touch-wait runs only while it holds.
-pub struct Worker {
-    usb: Option<Device>,
+pub struct Worker<T: Transport> {
+    usb: Option<T>,
     claimed: Option<String>,
     busy: bool,
     armed: bool,
     store_path: PathBuf,
 }
 
-impl Worker {
+impl<T: Transport> Worker<T> {
     /// Idle, nothing claimed, store at the default path.
     pub fn new(store_path: PathBuf) -> Self {
         Self {
@@ -97,8 +230,8 @@ impl Worker {
         self.claimed.clone()
     }
 
-    /// Mark an operation running. The caller must call [`Worker::finish`].
-    pub fn try_begin(&mut self) -> Result<(), WorkerError> {
+    /// Take the busy flag for one operation.
+    pub fn try_begin(&mut self) -> Result<OpToken, WorkerError> {
         if self.usb.is_none() {
             return Err(WorkerError::Unclaimed);
         }
@@ -106,15 +239,15 @@ impl Worker {
             return Err(WorkerError::Busy);
         }
         self.busy = true;
-        Ok(())
+        Ok(OpToken(()))
     }
 
-    /// Mark the operation done.
-    pub fn finish(&mut self) {
+    /// Give the busy flag back.
+    pub fn finish(&mut self, _op: OpToken) {
         self.busy = false;
     }
 
-    fn usb(&self) -> Result<&Device, WorkerError> {
+    fn usb(&self) -> Result<&T, WorkerError> {
         self.usb.as_ref().ok_or(WorkerError::Unclaimed)
     }
 
@@ -135,7 +268,7 @@ impl Worker {
             }
         }
         if self.usb.is_none() {
-            let usb = Device::open().await?;
+            let usb = T::open().await?;
             self.usb = Some(usb);
         }
         self.send_arm().await?;
@@ -144,20 +277,26 @@ impl Worker {
         Ok(())
     }
 
-    /// Send `enrolled_num` on the held handle. Sets nothing by itself.
-    async fn send_arm(&self) -> Result<(), WorkerError> {
+    /// Send `enrolled_num` on the held handle. Read only.
+    async fn send_arm(&self) -> Result<u8, WorkerError> {
         let usb = self.usb()?;
         let cancel = CancellationToken::new();
-        let out = Command::EnrolledNum.encode();
-        usb.cmd(
-            &out,
-            EndpointIn::Status,
-            Command::EnrolledNum.expected_len(),
-            Command::EnrolledNum.timeout(),
-            &cancel,
-        )
-        .await?;
-        Ok(())
+        let cmd = Command::EnrolledNum;
+        let raw = usb
+            .cmd(
+                &cmd.encode(),
+                EndpointIn::Status,
+                cmd.expected_len(),
+                cmd.timeout(),
+                &cancel,
+            )
+            .await?;
+        match Response::parse(&cmd, &raw)? {
+            Response::EnrolledNum { count } => Ok(count),
+            _ => Err(WorkerError::Enroll(
+                elanmoc_proto::EnrollError::UnexpectedReply,
+            )),
+        }
     }
 
     /// End the chip session without dropping the handle. Best effort.
@@ -207,15 +346,18 @@ impl Worker {
     pub fn list(&self, user: &str) -> Result<Vec<String>, WorkerError> {
         let store = Store::open(&self.store_path)?;
         match store.prints().get(user) {
-            Some(fingers) if !fingers.is_empty() => {
-                Ok(fingers.keys().cloned().collect())
-            }
+            Some(fingers) if !fingers.is_empty() => Ok(fingers.keys().cloned().collect()),
             _ => Err(WorkerError::NoPrints(user.to_string())),
         }
     }
 
-    /// Delete one finger: device slot first, store entry after.
-    pub async fn delete_finger(&mut self, user: &str, finger: &str) -> Result<(), WorkerError> {
+    /// Erase one slot, then drop its store entry. The only erase path.
+    ///
+    /// Takes a [`DeleteIntent`], so it cannot be reached from a store
+    /// comparison. The store says which slot the named finger lives in; it
+    /// never decides that an erase should happen.
+    pub async fn delete_finger(&mut self, intent: &DeleteIntent) -> Result<(), WorkerError> {
+        let (user, finger) = (intent.user(), intent.finger());
         if !elanmoc_store::is_valid_finger(finger) {
             return Err(WorkerError::BadFinger(finger.to_string()));
         }
@@ -228,16 +370,21 @@ impl Worker {
         };
         let cancel = CancellationToken::new();
         let cmd = Command::Delete(slot);
-        let raw = self.usb()?.cmd(
-            &cmd.encode(),
-            EndpointIn::Status,
-            cmd.expected_len(),
-            cmd.timeout(),
-            &cancel,
-        )
-        .await?;
+        tracing::warn!("erasing slot {slot} for {user}/{finger} on an explicit request");
+        let raw = self
+            .usb()?
+            .cmd(
+                &cmd.encode(),
+                EndpointIn::Status,
+                cmd.expected_len(),
+                cmd.timeout(),
+                &cancel,
+            )
+            .await?;
         let Response::Delete { status, .. } = Response::parse(&cmd, &raw)? else {
-            return Err(WorkerError::Enroll(elanmoc_proto::EnrollError::UnexpectedReply));
+            return Err(WorkerError::Enroll(
+                elanmoc_proto::EnrollError::UnexpectedReply,
+            ));
         };
         if !matches!(status, Status::Ok(0)) {
             return Err(WorkerError::Enroll(elanmoc_proto::EnrollError::Device {
@@ -254,36 +401,33 @@ impl Worker {
     /// Run one verify to a terminal answer, emitting signals on the way.
     ///
     /// Re-arms first when the flag is clear, aborts and disarms on error.
-    /// Happy paths send no extra bytes.
+    /// Happy paths send no extra bytes. `sink` always emits a terminal event.
     pub async fn verify(
         &mut self,
+        _op: &OpToken,
         finger: String,
-        tx: mpsc::Sender<OpEvent>,
+        mut sink: OpSink,
         cancel: CancellationToken,
     ) -> Result<(), WorkerError> {
-        self.try_begin()?;
-        if !self.armed {
-            if let Err(e) = self.send_arm().await {
-                self.finish();
-                return Err(e);
-            }
-            self.armed = true;
-        }
-        let result = self.verify_loop(&finger, &tx, &cancel).await;
+        let result = self.verify_inner(&finger, &mut sink, &cancel).await;
         if result.is_err() {
             self.abort_session().await;
             self.armed = false;
         }
-        self.finish();
+        sink.close(&result).await;
         result
     }
 
-    async fn verify_loop(
+    async fn verify_inner(
         &mut self,
         finger: &str,
-        tx: &mpsc::Sender<OpEvent>,
+        sink: &mut OpSink,
         cancel: &CancellationToken,
     ) -> Result<(), WorkerError> {
+        if !self.armed {
+            self.send_arm().await?;
+            self.armed = true;
+        }
         let user = self.claim_user()?.to_string();
         if finger != "any" && !elanmoc_store::is_valid_finger(finger) {
             return Err(WorkerError::BadFinger(finger.to_string()));
@@ -309,18 +453,17 @@ impl Worker {
             }
         }
         loop {
-            let raw = match self
-                .round(&Command::Verify.encode(), EndpointIn::TouchWait, 2, Command::Verify.timeout(), cancel)
-                .await
-            {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    self.verify_signal_error(tx, &e).await;
-                    return Err(e);
-                }
-            };
+            let raw = self
+                .round(
+                    &Command::Verify.encode(),
+                    EndpointIn::TouchWait,
+                    2,
+                    Command::Verify.timeout(),
+                    cancel,
+                )
+                .await?;
             let Response::Verify { status, .. } = Response::parse(&Command::Verify, &raw)? else {
-                self.emit(tx, OpEvent::VerifyStatus {
+                sink.emit(OpEvent::VerifyStatus {
                     result: dbus::verify::UNKNOWN_ERROR.to_string(),
                     done: true,
                 })
@@ -331,7 +474,7 @@ impl Worker {
                 elanmoc_proto::VerifyOutcome::classify(status)
             {
                 let name = self.finger_for_slot(&user, id);
-                self.emit(tx, OpEvent::VerifyFingerSelected { finger: name })
+                sink.emit(OpEvent::VerifyFingerSelected { finger: name })
                     .await;
             }
             let done = !matches!(
@@ -339,7 +482,7 @@ impl Worker {
                 Ok(elanmoc_proto::VerifyOutcome::Retry(_))
             );
             let result = dbus::verify_status(status).unwrap_or(dbus::verify::UNKNOWN_ERROR);
-            self.emit(tx, OpEvent::VerifyStatus {
+            sink.emit(OpEvent::VerifyStatus {
                 result: result.to_string(),
                 done,
             })
@@ -350,137 +493,124 @@ impl Worker {
         }
     }
 
-    /// `verify-disconnected` when the device is gone, then the error itself.
-    async fn verify_signal_error(&self, tx: &mpsc::Sender<OpEvent>, e: &WorkerError) {
-        if matches!(e, WorkerError::Usb(UsbError::Disconnected)) {
-            self.emit(tx, OpEvent::VerifyStatus {
-                result: dbus::verify::DISCONNECTED.to_string(),
-                done: true,
-            })
-            .await;
-        }
-    }
-
     /// Run one enroll to commit, emitting per-sample progress.
     ///
     /// Re-arms first when the flag is clear, aborts and disarms on error.
-    /// Happy paths send no extra bytes.
+    /// Happy paths send no extra bytes. `sink` always emits a terminal event.
     pub async fn enroll(
         &mut self,
+        _op: &OpToken,
         finger: String,
-        tx: mpsc::Sender<OpEvent>,
+        mut sink: OpSink,
         cancel: CancellationToken,
     ) -> Result<(), WorkerError> {
-        self.try_begin()?;
-        if !self.armed {
-            if let Err(e) = self.send_arm().await {
-                self.finish();
-                return Err(e);
-            }
-            self.armed = true;
-        }
-        let result = self.enroll_loop(&finger, &tx, &cancel).await;
+        let result = self.enroll_inner(&finger, &mut sink, &cancel).await;
         if result.is_err() {
             self.abort_session().await;
             self.armed = false;
         }
-        self.finish();
+        sink.close(&result).await;
         result
     }
 
-    async fn enroll_loop(
+    async fn enroll_inner(
         &mut self,
         finger: &str,
-        tx: &mpsc::Sender<OpEvent>,
+        sink: &mut OpSink,
         cancel: &CancellationToken,
     ) -> Result<(), WorkerError> {
         let user = self.claim_user()?.to_string();
         if !elanmoc_store::is_valid_finger(finger) {
             return Err(WorkerError::BadFinger(finger.to_string()));
         }
+        {
+            let store = Store::open(&self.store_path)?;
+            if store
+                .prints()
+                .get(&user)
+                .is_some_and(|f| f.contains_key(finger))
+            {
+                return Err(WorkerError::AlreadyEnrolled(finger.to_string()));
+            }
+        }
         let slot = self.free_slot(cancel).await?;
         let mut sm = Enroll::new(slot);
         let EnrollAction::Send(mut out) = sm.start() else {
-            return self.enroll_failed(tx, elanmoc_proto::EnrollError::UnexpectedReply).await;
+            return Err(WorkerError::Enroll(
+                elanmoc_proto::EnrollError::UnexpectedReply,
+            ));
         };
         loop {
-            let raw = match self
-                .round(&out, EndpointIn::TouchWait, 2, enroll_sample_timeout(), cancel)
-                .await
-            {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    if matches!(e, WorkerError::Usb(UsbError::Disconnected)) {
-                        self.emit(tx, OpEvent::EnrollStatus {
-                            result: dbus::enroll::DISCONNECTED.to_string(),
-                            done: true,
-                        })
-                        .await;
-                    }
-                    return Err(e);
-                }
-            };
+            let raw = self
+                .round(
+                    &out,
+                    EndpointIn::TouchWait,
+                    2,
+                    enroll_sample_timeout(),
+                    cancel,
+                )
+                .await?;
             match sm.step(&raw) {
                 EnrollAction::EmitProgress { done, total } => {
-                    self.emit(tx, OpEvent::EnrollStatus {
+                    sink.emit(OpEvent::EnrollStatus {
                         result: dbus::enroll::STAGE_PASSED.to_string(),
                         done: false,
                     })
                     .await;
                     tracing::info!("sample {done} of {total} accepted");
                     let Some(EnrollAction::Send(next)) = sm.take_send() else {
-                        return self.enroll_failed(tx, elanmoc_proto::EnrollError::UnexpectedReply).await;
+                        return Err(WorkerError::Enroll(
+                            elanmoc_proto::EnrollError::UnexpectedReply,
+                        ));
                     };
                     out = next;
                 }
                 EnrollAction::EmitRetry(r) => {
-                    self.emit(tx, OpEvent::EnrollStatus {
+                    sink.emit(OpEvent::EnrollStatus {
                         result: dbus::enroll_retry(r).to_string(),
                         done: false,
                     })
                     .await;
                     let Some(EnrollAction::Send(next)) = sm.take_send() else {
-                        return self.enroll_failed(tx, elanmoc_proto::EnrollError::UnexpectedReply).await;
+                        return Err(WorkerError::Enroll(
+                            elanmoc_proto::EnrollError::UnexpectedReply,
+                        ));
                     };
                     out = next;
                 }
                 EnrollAction::Send(next) => {
                     // First send after the last sample is the collision
                     // check (3 bytes), whose reply queues the commit.
-                    if next.len() == 3 && next.starts_with(&[0x40, 0xff, 0x10]) {
+                    let commit = if next.len() == 3 && next.starts_with(&[0x40, 0xff, 0x10]) {
                         let raw = self
-                            .round(&next, EndpointIn::Status, 3, Command::CheckCollision.timeout(), cancel)
+                            .round(
+                                &next,
+                                EndpointIn::Status,
+                                3,
+                                Command::CheckCollision.timeout(),
+                                cancel,
+                            )
                             .await?;
                         match sm.step(&raw) {
-                            EnrollAction::Send(commit) => {
-                                let done = self.commit_round(&commit, tx, &mut sm, finger, &user, cancel).await;
-                                return done;
-                            }
-                            EnrollAction::Fail(e) => {
-                                return self.enroll_failed(tx, e).await;
-                            }
+                            EnrollAction::Send(commit) => commit,
+                            EnrollAction::Fail(e) => return Err(WorkerError::Enroll(e)),
                             _ => {
-                                return self.enroll_failed(tx, elanmoc_proto::EnrollError::UnexpectedReply).await;
+                                return Err(WorkerError::Enroll(
+                                    elanmoc_proto::EnrollError::UnexpectedReply,
+                                ));
                             }
                         }
-                    }
-                    let done = self.commit_round(&next, tx, &mut sm, finger, &user, cancel).await;
-                    return done;
+                    } else {
+                        next
+                    };
+                    return self
+                        .commit_round(&commit, sink, &mut sm, finger, &user, cancel)
+                        .await;
                 }
                 EnrollAction::Complete(id) => {
-                    let mut store = Store::open(&self.store_path)?;
-                    store.insert(&user, finger, id)?;
-                    store.save()?;
-                    self.emit(tx, OpEvent::EnrollStatus {
-                        result: dbus::enroll::COMPLETED.to_string(),
-                        done: true,
-                    })
-                    .await;
-                    return Ok(());
+                    return self.record(sink, finger, &user, id).await;
                 }
-                EnrollAction::Fail(e) => {
-                    return self.enroll_failed(tx, e).await;
-                }
+                EnrollAction::Fail(e) => return Err(WorkerError::Enroll(e)),
             }
         }
     }
@@ -488,89 +618,78 @@ impl Worker {
     async fn commit_round(
         &mut self,
         commit: &[u8],
-        tx: &mpsc::Sender<OpEvent>,
+        sink: &mut OpSink,
         sm: &mut Enroll,
         finger: &str,
         user: &str,
         cancel: &CancellationToken,
     ) -> Result<(), WorkerError> {
-        let raw = match self
-            .round(commit, EndpointIn::Status, 2, Command::commit(0).timeout(), cancel)
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                if matches!(e, WorkerError::Usb(UsbError::Disconnected)) {
-                    self.emit(tx, OpEvent::EnrollStatus {
-                        result: dbus::enroll::DISCONNECTED.to_string(),
-                        done: true,
-                    })
-                    .await;
-                }
-                return Err(e);
-            }
-        };
+        let raw = self
+            .round(
+                commit,
+                EndpointIn::Status,
+                2,
+                Command::commit(0).timeout(),
+                cancel,
+            )
+            .await?;
         match sm.step(&raw) {
-            EnrollAction::Complete(id) => {
-                let mut store = Store::open(&self.store_path)?;
-                store.insert(user, finger, id)?;
-                store.save()?;
-                self.emit(tx, OpEvent::EnrollStatus {
-                    result: dbus::enroll::COMPLETED.to_string(),
-                    done: true,
-                })
-                .await;
-                Ok(())
-            }
-            EnrollAction::Fail(e) => self.enroll_failed(tx, e).await,
-            _ => self.enroll_failed(tx, elanmoc_proto::EnrollError::UnexpectedReply).await,
+            EnrollAction::Complete(id) => self.record(sink, finger, user, id).await,
+            EnrollAction::Fail(e) => Err(WorkerError::Enroll(e)),
+            _ => Err(WorkerError::Enroll(
+                elanmoc_proto::EnrollError::UnexpectedReply,
+            )),
         }
     }
 
-    async fn enroll_failed(
+    async fn record(
         &self,
-        tx: &mpsc::Sender<OpEvent>,
-        e: elanmoc_proto::EnrollError,
+        sink: &mut OpSink,
+        finger: &str,
+        user: &str,
+        id: u8,
     ) -> Result<(), WorkerError> {
-        self.emit(tx, OpEvent::EnrollStatus {
-            result: dbus::enroll_failure(&e).to_string(),
+        let mut store = Store::open(&self.store_path)?;
+        store.insert(user, finger, id)?;
+        store.save()?;
+        sink.emit(OpEvent::EnrollStatus {
+            result: dbus::enroll::COMPLETED.to_string(),
             done: true,
         })
         .await;
-        Err(WorkerError::Enroll(e))
+        Ok(())
     }
 
-    /// First slot the store does not track and without a 70 byte record.
+    /// Lowest slot enrollment may write into.
     ///
-    /// The 2 byte form cannot tell empty from occupied, so the store leads
-    /// and the chip record only vetoes. Never reuses a tracked slot.
+    /// The device's own count sets the floor: `enrolled_num` is the only
+    /// reading that proves a slot is in use, since 0c90 answers `finger_info`
+    /// with `40 ff` for occupied and empty alike. The store can only rule more
+    /// slots out. A 70 byte record vetoes a candidate as well.
     async fn free_slot(&mut self, cancel: &CancellationToken) -> Result<u8, WorkerError> {
-        let store = Store::open(&self.store_path)?;
-        let taken: Vec<u8> = store
-            .prints()
-            .values()
-            .flat_map(|fingers| fingers.values().copied())
-            .collect();
-        for id in 0..=MAX_SLOT {
-            if taken.contains(&id) {
-                continue;
-            }
+        let count = self.send_arm().await?;
+        self.armed = true;
+        let tracked = {
+            let store = Store::open(&self.store_path)?;
+            elanmoc_store::tracked_slots(store.prints())
+        };
+        for id in elanmoc_store::writable_slots(count, &tracked) {
+            let cmd = Command::FingerInfo(id);
             let raw = self
                 .round(
-                    &Command::FingerInfo(id).encode(),
+                    &cmd.encode(),
                     EndpointIn::Status,
-                    Command::FingerInfo(id).expected_len(),
-                    Command::FingerInfo(id).timeout(),
+                    cmd.expected_len(),
+                    cmd.timeout(),
                     cancel,
                 )
                 .await?;
-            let parsed = match Response::parse(&Command::FingerInfo(id), &raw) {
-                Ok(Response::FingerInfo { state, .. }) => state,
-                Ok(_) => continue,
-                Err(_) => continue,
-            };
-            if !matches!(parsed, SlotState::Enrolled { .. }) {
-                return Ok(id);
+            match Response::parse(&cmd, &raw) {
+                Ok(Response::FingerInfo {
+                    state: SlotState::Enrolled { .. },
+                    ..
+                }) => {}
+                _ => return Ok(id),
             }
         }
         Err(WorkerError::Enroll(elanmoc_proto::EnrollError::MaxEnrolled))
@@ -614,10 +733,6 @@ impl Worker {
         }
         result
     }
-
-    async fn emit(&self, tx: &mpsc::Sender<OpEvent>, event: OpEvent) {
-        let _ = tx.send(event).await;
-    }
 }
 
 fn enroll_sample_timeout() -> Duration {
@@ -638,3 +753,6 @@ fn status_code(status: Status) -> u8 {
         Status::Unknown(b) => b,
     }
 }
+
+#[cfg(test)]
+mod tests;

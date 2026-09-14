@@ -1,0 +1,555 @@
+//! Regression tests for the ways slot 0 could be erased.
+//!
+//! Every test drives a fake transport that records the bytes the worker
+//! sends, so an erase is proven present or absent from the wire rather than
+//! from reading the code. No hardware, no device.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use elanmoc_store::Store;
+use tokio::sync::mpsc;
+
+use super::*;
+
+/// Erase opcodes from `docs/protocol.md`. None may appear on the wire except
+/// from an explicit delete.
+const ERASE_PREFIXES: [&[u8]; 3] = [
+    &[0x40, 0xff, 0x05],       // delete, per protocol.md
+    &[0x40, 0xff, 0x13],       // delete_subsid, per protocol.md
+    &[0x40, 0xff, 0x99],       // wipe_all, per protocol.md
+];
+
+#[derive(Default)]
+struct Wire {
+    sent: Vec<Vec<u8>>,
+    replies: Vec<Result<Vec<u8>, ()>>,
+}
+
+/// Replays queued replies and records everything written.
+#[derive(Clone, Default)]
+struct Fake(Arc<Mutex<Wire>>);
+
+impl Fake {
+    fn new(replies: Vec<Vec<u8>>) -> Self {
+        let wire = Wire {
+            sent: Vec::new(),
+            replies: replies.into_iter().map(Ok).collect(),
+        };
+        Self(Arc::new(Mutex::new(wire)))
+    }
+
+    /// Replies until the queue runs out, then a transfer fault on every read.
+    fn failing_after(replies: Vec<Vec<u8>>) -> Self {
+        Self::new(replies)
+    }
+
+    fn sent(&self) -> Vec<Vec<u8>> {
+        match self.0.lock() {
+            Ok(w) => w.sent.clone(),
+            Err(e) => panic!("wire lock: {e}"),
+        }
+    }
+
+    fn erases(&self) -> Vec<Vec<u8>> {
+        self.sent()
+            .into_iter()
+            .filter(|out| ERASE_PREFIXES.iter().any(|p| out.starts_with(p)))
+            .collect()
+    }
+}
+
+impl Transport for Fake {
+    fn open() -> impl std::future::Future<Output = Result<Self, UsbError>> + Send {
+        // Tests inject the handle, so the lazy reopen path is never taken.
+        std::future::ready(Err(UsbError::NotFound))
+    }
+
+    fn cmd<'a>(
+        &'a self,
+        out: &'a [u8],
+        _ep: EndpointIn,
+        _in_len: usize,
+        _timeout: Duration,
+        _cancel: &'a CancellationToken,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, UsbError>> + Send + 'a {
+        let mut wire = match self.0.lock() {
+            Ok(w) => w,
+            Err(e) => panic!("wire lock: {e}"),
+        };
+        wire.sent.push(out.to_vec());
+        let reply = if wire.replies.is_empty() {
+            Err(UsbError::Timeout(Duration::from_secs(1)))
+        } else {
+            match wire.replies.remove(0) {
+                Ok(bytes) => Ok(bytes),
+                Err(()) => Err(UsbError::Disconnected),
+            }
+        };
+        std::future::ready(reply)
+    }
+}
+
+fn store_path(tag: &str) -> PathBuf {
+    let mut p = std::env::temp_dir();
+    p.push(format!("elanmocd-test-{}-{tag}.json", std::process::id()));
+    let _ = std::fs::remove_file(&p);
+    p
+}
+
+fn write_store(path: &PathBuf, entries: &[(&str, &str, u8)]) {
+    let mut prints: elanmoc_store::Prints = BTreeMap::new();
+    for (user, finger, slot) in entries {
+        prints
+            .entry((*user).to_string())
+            .or_default()
+            .insert((*finger).to_string(), *slot);
+    }
+    let text = match serde_json::to_string(&prints) {
+        Ok(t) => t,
+        Err(e) => panic!("serialise store: {e}"),
+    };
+    if let Err(e) = std::fs::write(path, text) {
+        panic!("write store: {e}");
+    }
+}
+
+fn read_store(path: &Path) -> elanmoc_store::Prints {
+    match Store::open(path) {
+        Ok(s) => s.prints().clone(),
+        Err(e) => panic!("read store: {e}"),
+    }
+}
+
+/// A claimed, armed worker over `fake`, without calling `claim`.
+fn claimed(fake: Fake, path: PathBuf) -> Worker<Fake> {
+    let mut w = Worker::new(path);
+    w.usb = Some(fake);
+    w.claimed = Some("u".to_string());
+    w.armed = true;
+    w
+}
+
+fn enrolled_num(count: u8) -> Vec<u8> {
+    vec![0x40, count]
+}
+
+/// Drain a channel into a list, for asserting on what the client saw.
+async fn drain(rx: &mut mpsc::Receiver<OpEvent>) -> Vec<OpEvent> {
+    let mut out = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        out.push(event);
+    }
+    let _ = rx;
+    out
+}
+
+/// The store says slot 0 is free, the device says one finger is enrolled.
+///
+/// This is the shape that lost the slot 0 template: a store emptied by a
+/// delete, a device that still holds a print, and `finger_info` answering
+/// `40 ff` for occupied and empty alike. The enrollment must not touch slot 0.
+#[tokio::test]
+async fn empty_store_never_hands_out_an_occupied_slot() {
+    let path = store_path("disagree");
+    write_store(&path, &[]);
+    let fake = Fake::new(vec![
+        enrolled_num(1),           // free_slot reads the count
+        vec![0x40, 0xff],          // finger_info(1), the 2 byte form
+        vec![0x40, 0x00],          // first enroll sample, then the queue dries up
+    ]);
+    let mut w = claimed(fake.clone(), path.clone());
+    let op = match w.try_begin() {
+        Ok(op) => op,
+        Err(e) => panic!("begin: {e}"),
+    };
+    let (tx, mut rx) = mpsc::channel(32);
+    let sink = OpSink::new(OpKind::Enroll, tx);
+    let _ = w
+        .enroll(
+            &op,
+            "left-index-finger".to_string(),
+            sink,
+            CancellationToken::new(),
+        )
+        .await;
+
+    let sent = fake.sent();
+    let samples: Vec<&Vec<u8>> = sent
+        .iter()
+        .filter(|out| out.starts_with(&[0x40, 0xff, 0x01]))
+        .collect();
+    assert!(!samples.is_empty(), "the enroll ran: {sent:?}");
+    for sample in &samples {
+        assert_ne!(sample[3], 0, "enrolled into slot 0 while the device held one print");
+    }
+    assert_eq!(samples[0][3], 1, "first free slot above the device count");
+    let _ = drain(&mut rx).await;
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A store that disagrees with the device never causes a device delete.
+///
+/// Enroll, verify and list all run against a store that contradicts the
+/// device in both directions. No erase opcode may reach the wire.
+#[tokio::test]
+async fn a_disagreeing_store_never_erases() {
+    let path = store_path("no-erase");
+    write_store(&path, &[("u", "right-index-finger", 3)]);
+    let fake = Fake::new(vec![
+        enrolled_num(0), // device says empty, store claims slot 3
+        vec![0x40, 0xff],
+        vec![0x40, 0x00],
+    ]);
+    let mut w = claimed(fake.clone(), path.clone());
+    let op = match w.try_begin() {
+        Ok(op) => op,
+        Err(e) => panic!("begin: {e}"),
+    };
+    let (tx, mut rx) = mpsc::channel(32);
+    let _ = w
+        .enroll(
+            &op,
+            "left-thumb".to_string(),
+            OpSink::new(OpKind::Enroll, tx),
+            CancellationToken::new(),
+        )
+        .await;
+    w.finish(op);
+
+    let op = match w.try_begin() {
+        Ok(op) => op,
+        Err(e) => panic!("begin: {e}"),
+    };
+    let (vtx, mut vrx) = mpsc::channel(32);
+    let _ = w
+        .verify(
+            &op,
+            "right-index-finger".to_string(),
+            OpSink::new(OpKind::Verify, vtx),
+            CancellationToken::new(),
+        )
+        .await;
+    w.finish(op);
+    let _ = w.list("u");
+    w.release().await;
+
+    assert!(
+        fake.erases().is_empty(),
+        "an erase reached the wire: {:?}",
+        fake.erases()
+    );
+    assert_eq!(
+        read_store(&path)["u"]["right-index-finger"],
+        3,
+        "the store entry survived"
+    );
+    let _ = drain(&mut rx).await;
+    let _ = drain(&mut vrx).await;
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A failed enrol never erases an existing slot.
+#[tokio::test]
+async fn a_failed_enroll_erases_nothing() {
+    let path = store_path("enroll-fail");
+    write_store(&path, &[]);
+    let fake = Fake::failing_after(vec![
+        enrolled_num(1),
+        vec![0x40, 0xff],
+        vec![0x40, 0xdd], // slot limit, a hard failure mid-loop
+    ]);
+    let mut w = claimed(fake.clone(), path.clone());
+    let op = match w.try_begin() {
+        Ok(op) => op,
+        Err(e) => panic!("begin: {e}"),
+    };
+    let (tx, mut rx) = mpsc::channel(32);
+    let result = w
+        .enroll(
+            &op,
+            "left-thumb".to_string(),
+            OpSink::new(OpKind::Enroll, tx),
+            CancellationToken::new(),
+        )
+        .await;
+    assert!(result.is_err(), "the enroll failed");
+    assert!(
+        fake.erases().is_empty(),
+        "a failed enroll erased: {:?}",
+        fake.erases()
+    );
+    let _ = drain(&mut rx).await;
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A cancelled enrol never erases an existing slot.
+#[tokio::test]
+async fn a_cancelled_enroll_erases_nothing() {
+    let path = store_path("enroll-cancel");
+    write_store(&path, &[]);
+    let fake = Fake::new(vec![enrolled_num(1), vec![0x40, 0xff]]);
+    let mut w = claimed(fake.clone(), path.clone());
+    let op = match w.try_begin() {
+        Ok(op) => op,
+        Err(e) => panic!("begin: {e}"),
+    };
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let (tx, mut rx) = mpsc::channel(32);
+    let result = w
+        .enroll(
+            &op,
+            "left-thumb".to_string(),
+            OpSink::new(OpKind::Enroll, tx),
+            cancel,
+        )
+        .await;
+    assert!(result.is_err(), "the enroll was cancelled");
+    assert!(
+        fake.erases().is_empty(),
+        "a cancelled enroll erased: {:?}",
+        fake.erases()
+    );
+    let _ = drain(&mut rx).await;
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Claim, release, claim again does not change what the device holds.
+///
+/// The cycle may send only `enrolled_num` and `abort`, and the count the
+/// device reports must be the same at the end as at the start.
+#[tokio::test]
+async fn claim_release_claim_leaves_the_count_alone() {
+    let path = store_path("cycle");
+    write_store(&path, &[("u", "right-index-finger", 0)]);
+    let fake = Fake::new(vec![
+        enrolled_num(1),
+        vec![],
+        enrolled_num(1),
+        vec![],
+        enrolled_num(1),
+        vec![],
+        enrolled_num(1),
+        vec![],
+        enrolled_num(1),
+        vec![],
+        enrolled_num(1),
+    ]);
+    let mut w = claimed(fake.clone(), path.clone());
+    for _ in 0..5 {
+        if let Err(e) = w.claim("u".to_string()).await {
+            panic!("claim: {e}");
+        }
+        w.release().await;
+    }
+    let count = match w.send_arm().await {
+        Ok(n) => n,
+        Err(e) => panic!("final count read: {e}"),
+    };
+
+    assert_eq!(count, 1, "the count is unchanged after five cycles");
+    assert!(fake.erases().is_empty(), "a cycle erased: {:?}", fake.erases());
+    for out in fake.sent() {
+        assert!(
+            out == vec![0x40, 0xff, 0x04] || out == vec![0x40, 0xff, 0x02],
+            "claim/release sent more than arm and abort: {out:?}"
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Enrolling an already-enrolled finger name is refused before any device I/O.
+#[tokio::test]
+async fn a_duplicate_finger_name_is_refused() {
+    let path = store_path("dup");
+    write_store(&path, &[("u", "left-thumb", 2)]);
+    let fake = Fake::new(vec![enrolled_num(1)]);
+    let mut w = claimed(fake.clone(), path.clone());
+    let op = match w.try_begin() {
+        Ok(op) => op,
+        Err(e) => panic!("begin: {e}"),
+    };
+    let (tx, mut rx) = mpsc::channel(32);
+    let result = w
+        .enroll(
+            &op,
+            "left-thumb".to_string(),
+            OpSink::new(OpKind::Enroll, tx),
+            CancellationToken::new(),
+        )
+        .await;
+
+    match result {
+        Err(WorkerError::AlreadyEnrolled(f)) => assert_eq!(f, "left-thumb"),
+        other => panic!("expected AlreadyEnrolled, got {other:?}"),
+    }
+    let events = drain(&mut rx).await;
+    assert_eq!(
+        events.last(),
+        Some(&OpEvent::EnrollStatus {
+            result: "enroll-duplicate".to_string(),
+            done: true,
+        }),
+        "the client was told why"
+    );
+    let sends: Vec<Vec<u8>> = fake
+        .sent()
+        .into_iter()
+        .filter(|out| out != &vec![0x40, 0xff, 0x02])
+        .collect();
+    assert!(
+        sends.is_empty(),
+        "the refusal sent more than the teardown abort: {sends:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Taking the busy flag twice used to stop every op before it sent a byte.
+#[tokio::test]
+async fn the_busy_flag_is_taken_once_per_op() {
+    let path = store_path("token");
+    write_store(&path, &[]);
+    let fake = Fake::new(vec![enrolled_num(0), vec![0x40, 0xff], vec![0x40, 0x00]]);
+    let mut w = claimed(fake.clone(), path.clone());
+    let op = match w.try_begin() {
+        Ok(op) => op,
+        Err(e) => panic!("begin: {e}"),
+    };
+    assert!(w.try_begin().is_err(), "a second op is refused");
+    let (tx, mut rx) = mpsc::channel(32);
+    let _ = w
+        .enroll(
+            &op,
+            "left-thumb".to_string(),
+            OpSink::new(OpKind::Enroll, tx),
+            CancellationToken::new(),
+        )
+        .await;
+    assert!(
+        fake.sent().iter().any(|o| o.starts_with(&[0x40, 0xff, 0x01])),
+        "the enroll reached the device: {:?}",
+        fake.sent()
+    );
+    let _ = drain(&mut rx).await;
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Every enroll error path emits a terminal status.
+#[tokio::test]
+async fn every_enroll_error_emits_a_terminal_status() {
+    let cases: [(&str, Vec<Vec<u8>>, &str); 3] = [
+        ("unclaimed store", vec![enrolled_num(0)], "left-thumb"),
+        (
+            "device says slot limit",
+            vec![enrolled_num(1), vec![0x40, 0xff], vec![0x40, 0xdd]],
+            "left-thumb",
+        ),
+        ("bad finger name", vec![], "not-a-finger"),
+    ];
+    for (name, replies, finger) in cases {
+        let path = store_path(&format!("term-{}", name.replace(' ', "-")));
+        write_store(&path, &[]);
+        let fake = Fake::new(replies);
+        let mut w = claimed(fake, path.clone());
+        let op = match w.try_begin() {
+            Ok(op) => op,
+            Err(e) => panic!("begin: {e}"),
+        };
+        let (tx, mut rx) = mpsc::channel(32);
+        let result = w
+            .enroll(
+                &op,
+                finger.to_string(),
+                OpSink::new(OpKind::Enroll, tx),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err(), "{name} failed");
+        let events = drain(&mut rx).await;
+        assert!(
+            events.last().is_some_and(OpEvent::is_terminal),
+            "{name} ended with no terminal status: {events:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// Every verify error path emits a terminal status.
+#[tokio::test]
+async fn every_verify_error_emits_a_terminal_status() {
+    type VerifyCase = (&'static str, Vec<(&'static str, &'static str, u8)>, &'static str);
+    let cases: [VerifyCase; 3] = [
+        ("no prints", vec![], "any"),
+        (
+            "finger not enrolled",
+            vec![("u", "left-thumb", 1)],
+            "right-thumb",
+        ),
+        (
+            "device stops answering",
+            vec![("u", "left-thumb", 1)],
+            "left-thumb",
+        ),
+    ];
+    for (name, entries, finger) in cases {
+        let path = store_path(&format!("vterm-{}", name.replace(' ', "-")));
+        write_store(&path, &entries);
+        let fake = Fake::new(Vec::new());
+        let mut w = claimed(fake, path.clone());
+        let op = match w.try_begin() {
+            Ok(op) => op,
+            Err(e) => panic!("begin: {e}"),
+        };
+        let (tx, mut rx) = mpsc::channel(32);
+        let result = w
+            .verify(
+                &op,
+                finger.to_string(),
+                OpSink::new(OpKind::Verify, tx),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err(), "{name} failed");
+        let events = drain(&mut rx).await;
+        assert!(
+            events.last().is_some_and(OpEvent::is_terminal),
+            "{name} ended with no terminal status: {events:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// The one path that may erase does erase, and only with an intent.
+#[tokio::test]
+async fn an_explicit_delete_is_the_only_thing_that_erases() {
+    let path = store_path("delete");
+    write_store(&path, &[("u", "right-index-finger", 0)]);
+    let fake = Fake::new(vec![vec![0x40, 0x00]]);
+    let mut w = claimed(fake.clone(), path.clone());
+    let intent = DeleteIntent::from_user_request("u", "right-index-finger");
+    if let Err(e) = w.delete_finger(&intent).await {
+        panic!("delete: {e}");
+    }
+    assert_eq!(
+        fake.erases(),
+        vec![vec![0x40, 0xff, 0x05, 0x00, 0x00]],
+        "the delete sent exactly one erase"
+    );
+    assert!(read_store(&path).is_empty(), "the store entry went with it");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// An intent for a finger the store does not track erases nothing.
+#[tokio::test]
+async fn a_delete_for_an_untracked_finger_erases_nothing() {
+    let path = store_path("delete-miss");
+    write_store(&path, &[("u", "right-index-finger", 0)]);
+    let fake = Fake::new(vec![vec![0x40, 0x00]]);
+    let mut w = claimed(fake.clone(), path.clone());
+    let intent = DeleteIntent::from_user_request("u", "left-thumb");
+    assert!(w.delete_finger(&intent).await.is_err(), "refused");
+    assert!(fake.erases().is_empty(), "nothing was erased");
+    let _ = std::fs::remove_file(&path);
+}

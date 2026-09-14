@@ -16,7 +16,10 @@ use zbus::{interface, Connection};
 mod status;
 mod worker;
 
-use worker::{OpEvent, Worker, WorkerError};
+use worker::{DeleteIntent, OpEvent, OpKind, OpSink, OpToken, Worker, WorkerError};
+
+/// The daemon always drives the real sensor. Tests drive a fake transport.
+type UsbWorker = Worker<elanmoc_usb::Device>;
 
 const BUS_NAME: &str = "net.reactivated.Fprint";
 const MANAGER_PATH: &str = "/net/reactivated/Fprint/Manager";
@@ -44,6 +47,7 @@ impl From<WorkerError> for FprintError {
             WorkerError::Unclaimed => Self::ClaimDevice("device is not claimed".to_string()),
             WorkerError::BadFinger(_) => Self::InvalidFingername,
             WorkerError::NoPrints(_) | WorkerError::NotEnrolled(_) => Self::NoEnrolledPrints,
+            WorkerError::AlreadyEnrolled(f) => Self::Internal(format!("{f} is already enrolled")),
             WorkerError::Cancelled => Self::NoActionInProgress,
             WorkerError::Usb(e) => Self::Internal(e.to_string()),
             WorkerError::Proto(e) => Self::Internal(e.to_string()),
@@ -67,17 +71,18 @@ impl Manager {
 }
 
 struct Device {
-    worker: Arc<Mutex<Worker>>,
+    worker: Arc<Mutex<UsbWorker>>,
     op_cancel: Arc<Mutex<Option<CancellationToken>>>,
 }
 
 impl Device {
-    async fn start_op(&self) -> Result<CancellationToken, FprintError> {
+    /// Take the busy flag once, here. The worker never takes it again.
+    async fn start_op(&self) -> Result<(OpToken, CancellationToken), FprintError> {
         let mut worker = self.worker.lock().await;
-        worker.try_begin()?;
+        let op = worker.try_begin()?;
         let cancel = CancellationToken::new();
         *self.op_cancel.lock().await = Some(cancel.clone());
-        Ok(cancel)
+        Ok((op, cancel))
     }
 
     async fn stop_running(&self) {
@@ -107,7 +112,8 @@ impl Device {
     async fn delete_enrolled_fingers(&mut self, username: String) -> Result<(), FprintError> {
         let fingers = self.worker.lock().await.list(&username)?;
         for finger in fingers {
-            self.worker.lock().await.delete_finger(&username, &finger).await?;
+            let intent = DeleteIntent::from_user_request(&username, &finger);
+            self.worker.lock().await.delete_finger(&intent).await?;
         }
         Ok(())
     }
@@ -123,7 +129,8 @@ impl Device {
             .await
             .claimed_user()
             .ok_or(FprintError::ClaimDevice("device is not claimed".to_string()))?;
-        self.worker.lock().await.delete_finger(&user, &finger_name).await?;
+        let intent = DeleteIntent::from_user_request(&user, &finger_name);
+        self.worker.lock().await.delete_finger(&intent).await?;
         Ok(())
     }
 
@@ -132,15 +139,18 @@ impl Device {
         finger_name: String,
         #[zbus(signal_context)] ctxt: SignalContext<'_>,
     ) -> Result<(), FprintError> {
-        let cancel = self.start_op().await?;
+        let (op, cancel) = self.start_op().await?;
         let (tx, mut rx) = mpsc::channel::<OpEvent>(16);
         let worker = self.worker.clone();
         let ender = self.op_cancel.clone();
         tokio::spawn(async move {
             {
                 let mut w = worker.lock().await;
-                let _ = w.verify(finger_name, tx, cancel).await;
-                w.finish();
+                let sink = OpSink::new(OpKind::Verify, tx);
+                if let Err(e) = w.verify(&op, finger_name, sink, cancel).await {
+                    tracing::warn!("verify ended: {e}");
+                }
+                w.finish(op);
             }
             *ender.lock().await = None;
         });
@@ -171,15 +181,18 @@ impl Device {
         finger_name: String,
         #[zbus(signal_context)] ctxt: SignalContext<'_>,
     ) -> Result<(), FprintError> {
-        let cancel = self.start_op().await?;
+        let (op, cancel) = self.start_op().await?;
         let (tx, mut rx) = mpsc::channel::<OpEvent>(32);
         let worker = self.worker.clone();
         let ender = self.op_cancel.clone();
         tokio::spawn(async move {
             {
                 let mut w = worker.lock().await;
-                let _ = w.enroll(finger_name, tx, cancel).await;
-                w.finish();
+                let sink = OpSink::new(OpKind::Enroll, tx);
+                if let Err(e) = w.enroll(&op, finger_name, sink, cancel).await {
+                    tracing::warn!("enroll ended: {e}");
+                }
+                w.finish(op);
             }
             *ender.lock().await = None;
         });
@@ -258,7 +271,7 @@ async fn main() -> anyhow::Result<()> {
     let store_path = std::env::var("ELANMOC_STORE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(elanmoc_store::DEFAULT_PATH));
-    let worker = Arc::new(Mutex::new(Worker::new(store_path)));
+    let worker = Arc::new(Mutex::new(UsbWorker::new(store_path)));
     let op_cancel: Arc<Mutex<Option<CancellationToken>>> = Arc::new(Mutex::new(None));
 
     let session = std::env::var("ELANMOC_BUS").is_ok_and(|v| v == "session");
@@ -303,7 +316,7 @@ async fn main() -> anyhow::Result<()> {
 /// Watch logind sleep signals. Suspend drops the handle, resume reopens lazily.
 async fn sleep_listener(
     conn: Connection,
-    worker: Arc<Mutex<Worker>>,
+    worker: Arc<Mutex<UsbWorker>>,
     op_cancel: Arc<Mutex<Option<CancellationToken>>>,
 ) {
     use futures_util::StreamExt as _;

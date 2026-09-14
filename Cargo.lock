@@ -920,6 +920,7 @@ dependencies = [
  "elanmoc-store",
  "elanmoc-usb",
  "futures-util",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
