@@ -860,3 +860,28 @@ an empty file.
 Not observed on hardware: nothing reached the enroll path in that build. It is
 read off the code plus the confirmed `40 ff` behaviour, and is recorded as a
 structural fault, not an event.
+
+---
+
+## 2026-09-14 Step 1 ground truth: the chip is empty, the count is honest
+
+One primed `verify` claim, capture running, D-011 followed: the run was
+started in the background, the user was asked to touch the right index
+finger enrolled at GATE 3a, and the log was read only after their message.
+
+On the wire:
+
+```
+40 ff 04  ->  40 00        arm, count 0
+40 ff 03  ->  40 fd        on 0x84, 151.31 s after the write
+```
+
+`0xfd` on the finger that matched 10 of 10 times in Phase 4. The template is
+gone from flash, not merely from the host's view: `enrolled_num` and the
+match both agree. The count is not lying.
+
+Capture note: usbmon1 carries every device on bus 1, and a USB audio device
+was streaming, so 150 seconds cost 491 MB on a disk at 99%. Raw pcapng files
+are decoded to `captures/decoded/*.txt` and then deleted; the decode is the
+record. New captures use `dumpcap -s 160`, which keeps the 64 byte usbmon
+header plus the longest payload in the table (the 72 byte `commit`).
