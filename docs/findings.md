@@ -645,11 +645,13 @@ after:      enrolled_num -> 40 01 (was 40 00)
 
 Facts:
 
-- **Commit works clean.** `40 00` on `0x83`, 102 ms after the 72 byte write. A
+- **Commit works clean, n=1, provisional.** `40 00` on `0x83`, 102 ms after the 72 byte write. A
   500 ms trailing read on `0x83` got nothing (capture shows our own unlink at
-  `-2`). No cancel, no workaround, no second command. The known community bug
-  did not reproduce: the difference from the broken implementations is that this
-  claim was armed with `enrolled_num` at the front and held throughout.
+  `-2`). No cancel, no workaround, no second command. This is one enroll into
+  an empty chip (slot 0, sub id `0xf5`, no collision possible), so it tests
+  neither suspect in `docs/protocol.md`: the `0xf0 | (id + 5)` nibble nor the
+  count-as-id allocation. The bug is not recorded as fixed. The second enroll
+  decides whether the arming rule plus a held claim accounts for it.
 - **Attempt counters 00 to 07 all accepted.** Three retries (`0x43`, `0x44`,
   `0x41`) held the counter at 04 and resent the same attempt, exactly as the
   state machine does. A 12.7 second pause at attempt 04 (finger adjustment)
