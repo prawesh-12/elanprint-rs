@@ -931,3 +931,51 @@ command the machine just queued. Both the daemon and the CLI now read where
 the machine says. Neither infers an endpoint from bytes any more, and
 `machine_io` is deleted. Covered by `an_enrol_reads_every_reply_on_the_right_endpoint`,
 which fails with "wrong endpoint for [40, ff, 10]" against the old loop.
+
+---
+
+## 2026-09-14 Step 5: enrol holds, 5 of 5 matches, count never moved
+
+Second app enrol attempt, after the endpoint fix. Slot 0, left index finger,
+capture running, eight confirmed touches. The whole sequence on the wire:
+
+```
+40 ff 04              ->  40 00        arm, count 0
+40 ff 04              ->  40 00        free_slot reads the count
+40 ff 12 00           ->  40 ff        slot 0, the 2 byte form
+40 ff 01 00 08 00 00  ->  40 00        sample 1
+40 ff 01 00 08 03 00  ->  40 43        MoveUp, counter held
+40 ff 01 00 08 03 00  ->  40 44        MoveLeft, counter held
+...                                    eight samples accepted
+40 ff 10              ->  40 00 ff     on 0x83, 3 bytes, 484 ms
+40 ff 11 f5 <69 zero> ->  40 00        on 0x83, 103 ms
+```
+
+`commit` answered in 103 ms, matching the 102 ms recorded at GATE 3a. Store
+saved `prawesh/left-index-finger` at slot 0, sub id `0xf5`.
+
+Two `EnrollStart` presses after completion were refused with
+"finger 'left-index-finger' is already enrolled, delete it first" and each
+emitted a terminal status. That is D-026 answering on real hardware.
+
+### Hold checks, no touches at any point
+
+| After                    | `enrolled_num` | Count |
+| ------------------------ | -------------- | ----- |
+| the enrol                | `40 01`        | 1     |
+| a daemon restart         | `40 01`        | 1     |
+| five claim/release cycles| `40 01`        | 1     |
+| a CLI sync               | `40 01`        | 1     |
+
+`sync` reported the entry `unconfirmed` ("2 byte form, empty and invalid read
+alike") and pruned nothing, which is the rule working: one read never proves
+a slot state on 0c90.
+
+### Verify, 5 of 5
+
+Five separate primed claims, D-011 for every run: backgrounded, touch asked,
+log read only after the user's message. All five answered `40 00` on `0x84`,
+match on finger id 0. Latencies in seconds: 41.72, 46.71, 43.46, 84.55, 45.85.
+
+`enrolled_num` after the series: `40 01`. The decoded capture of the whole
+series contains no `40 ff 05`, no `40 ff 13` and no `40 ff 99`.
