@@ -124,6 +124,30 @@ impl Store {
     }
 }
 
+/// Ids an enrollment may write, lowest first.
+///
+/// `count` is `enrolled_num`, read from the chip. Slots below it are presumed
+/// to hold templates: on 0c90 an occupied slot answers `finger_info` with the
+/// same `40 ff` an empty one does, so no scan separates them. The store only
+/// removes further candidates, never restores one, so a store that disagrees
+/// with the device can never hand out a slot the device says is in use.
+pub fn writable_slots(count: u8, tracked: &[u8]) -> Vec<u8> {
+    (count..=MAX_SLOT)
+        .filter(|id| !tracked.contains(id))
+        .collect()
+}
+
+/// Slots the store believes are occupied, across every user.
+pub fn tracked_slots(prints: &Prints) -> Vec<u8> {
+    let mut slots: Vec<u8> = prints
+        .values()
+        .flat_map(|fingers| fingers.values().copied())
+        .collect();
+    slots.sort_unstable();
+    slots.dedup();
+    slots
+}
+
 /// One store entry paired with what the device said about its slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryStatus {
@@ -346,6 +370,53 @@ mod tests {
         assert_eq!(report.confirmed.len(), 1);
         assert_eq!(report.stale.len(), 1);
         assert_eq!(report.stale[0].slot, 2);
+    }
+
+    #[test]
+    fn the_device_count_is_the_floor_not_the_store() {
+        assert_eq!(writable_slots(1, &[])[0], 1);
+        assert_eq!(writable_slots(0, &[])[0], 0);
+        assert_eq!(writable_slots(3, &[])[0], 3);
+    }
+
+    #[test]
+    fn an_empty_store_never_reopens_a_slot_the_device_counts() {
+        for count in 1..=MAX_SLOT {
+            assert!(
+                !writable_slots(count, &[]).contains(&0),
+                "count {count} offered slot 0"
+            );
+        }
+    }
+
+    #[test]
+    fn the_store_only_removes_candidates() {
+        assert!(!writable_slots(0, &[0, 1]).contains(&0));
+        assert!(!writable_slots(0, &[0, 1]).contains(&1));
+        assert_eq!(writable_slots(0, &[0, 1])[0], 2);
+    }
+
+    #[test]
+    fn a_full_device_offers_nothing() {
+        assert!(writable_slots(MAX_SLOT + 1, &[]).is_empty());
+    }
+
+    #[test]
+    fn tracked_slots_are_sorted_and_unique() {
+        let mut prints: Prints = BTreeMap::new();
+        prints
+            .entry("u".to_string())
+            .or_default()
+            .insert("left-thumb".to_string(), 2);
+        prints
+            .entry("v".to_string())
+            .or_default()
+            .insert("right-thumb".to_string(), 2);
+        prints
+            .entry("v".to_string())
+            .or_default()
+            .insert("left-index-finger".to_string(), 0);
+        assert_eq!(tracked_slots(&prints), vec![0, 2]);
     }
 
     #[test]
