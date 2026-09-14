@@ -306,6 +306,8 @@ fn header(ui: &mut egui::Ui, app: &LoginApp, now: Instant) {
 }
 
 /// Connect, pick, scan as one sequential flow.
+///
+/// Connection state only. The verdict below owns all status text.
 fn reader_block(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
     match app.screen {
         Screen::Disconnected => {
@@ -326,18 +328,13 @@ fn reader_block(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
                 app.connect(ctx);
             }
         }
-        Screen::Ready => {
+        Screen::Ready | Screen::Waiting => {
             ui.label("reader ready");
             ui.add_space(6.0);
             ui.label(egui::RichText::new("pick a finger, then start the scan below").weak());
         }
-        Screen::Waiting => {
-            ui.label("reader ready");
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new("touch the sensor").strong());
-        }
         Screen::Granted | Screen::Denied | Screen::Locked | Screen::Failed => {
-            ui.label(egui::RichText::new(&app.status).strong());
+            ui.label("reader ready");
         }
     }
 }
