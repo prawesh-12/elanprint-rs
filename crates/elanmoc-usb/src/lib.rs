@@ -188,6 +188,7 @@ impl Device {
                 return Err(UsbError::ShortRead {
                     wanted: len,
                     got: buf.len(),
+                    data: buf,
                 });
             }
         }

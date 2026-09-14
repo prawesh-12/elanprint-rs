@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/elanmoc-usb", "crates/elanmoc-cli"]
+members = ["crates/elanmoc-usb", "crates/elanmoc-proto", "crates/elanmoc-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +21,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 
 elanmoc-usb = { path = "crates/elanmoc-usb" }
+elanmoc-proto = { path = "crates/elanmoc-proto" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

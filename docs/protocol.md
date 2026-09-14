@@ -61,11 +61,11 @@ Not used by this driver. It may be how the Windows WBF stack binds. Reading the 
 
 | Name                         | Opcode (hex)                | out_len | in_len  | EP in    | Destructive            | Status     |
 | ---------------------------- | --------------------------- | ------- | ------- | -------- | ---------------------- | ---------- |
-| `fw_ver`                   | `40 19`                   | 2       | 2       | `0x83` | no                     | documented |
-| `sensor_size`              | `00 0c`                   | 2       | 4       | `0x83` | no                     | documented |
-| `enrolled_num`             | `40 ff 04`                | 3       | 2       | `0x83` | no                     | documented |
+| `fw_ver`                   | `40 19`                   | 2       | 2       | `0x83` | no                     | **confirmed** |
+| `sensor_size`              | `00 0c`                   | 2       | 4       | `0x83` | no                     | **confirmed** |
+| `enrolled_num`             | `40 ff 04`                | 3       | 2       | `0x83` | no                     | **confirmed** |
 | `enrolled_num1`            | `40 ff 00`                | 3       | 2       | `0x83` | no                     | documented |
-| `finger_info`              | `40 ff 12`                | 4       | 70      | `0x83` | no                     | documented |
+| `finger_info`              | `40 ff 12`                | 4       | 70      | `0x83` | no                     | **confirmed** |
 | `verify`                   | `40 ff 03`                | 3       | 2       | `0x84` | no                     | documented |
 | `abort`                    | `40 ff 02`                | 3       | 2       | `0x83` | no                     | documented |
 | `enroll`                   | `40 ff 01`                | 7       | 2       | `0x84` | writes flash           | documented |
@@ -84,13 +84,22 @@ Notes per command:
 
 Response is two bytes: major, minor. Use this as the Phase 2 GO/NO-GO probe.
 
+**Observed on 0c90, 2026-09-14:** `01 08`, so firmware 1.8. Matches `bcdDevice
+0108` in the device descriptor.
+
 ### `sensor_size`
 
 Response is 4 bytes. Width is `byte0 + 1`, height is `byte2 + 1`. The off-by-one is real, not a typo.
 
+**Observed on 0c90, 2026-09-14:** `4f 00 4f 00`, so 80 x 80. Bytes 1 and 3 are
+zero, consistent with two little endian 16 bit fields.
+
 ### `enrolled_num`
 
-Byte 1 of the response is the count of enrolled fingers. **This is the one to use.** `enrolled_count` in plan.md and in the CLI refers to this command; the two names mean the same thing.
+Byte 1 of the response is the count of enrolled fingers.
+
+**Observed on 0c90, 2026-09-14:** `40 00`, so 0 enrolled. Byte 0 is `0x40`,
+the command's first byte, so it reads as an echo rather than data. **This is the one to use.** `enrolled_count` in plan.md and in the CLI refers to this command; the two names mean the same thing.
 
 ### `enrolled_num1`
 
@@ -98,7 +107,13 @@ Present in the source's command table but never called by it. Purpose and respon
 
 ### `finger_info`
 
-Payload is a single byte finger id. Response is 70 bytes. If byte 1 comes back `0xff`, the sensor is in a stuck state and the source works around it by running a `verify` to clear it. If the response is only 2 bytes long, treat byte 1 as an error code. The last byte being `0xff` means that slot is not enrolled.
+Payload is a single byte finger id. Response is 70 bytes.
+
+**Observed on 0c90, 2026-09-14:** ids 0 to 9 all returned **2 bytes, `40 ff`**,
+never 70, with `enrolled_num` at 0. Read the two byte form before assuming a 70
+byte one. See Q-002 for what `40 ff` means here, which is not yet settled.
+
+ If byte 1 comes back `0xff`, the sensor is in a stuck state and the source works around it by running a `verify` to clear it. If the response is only 2 bytes long, treat byte 1 as an error code. The last byte being `0xff` means that slot is not enrolled.
 
 ### `verify`
 
@@ -212,7 +227,10 @@ These opcodes appear in the source's notes. They are recorded here so nobody reu
 
 | Command | Expected (0c4c source) | Observed (0c90) | Notes |
 | ------- | ---------------------- | --------------- | ----- |
-|         |                        |                 |       |
+| `fw_ver` | 2 bytes, major then minor | `01 08` | Matches. Agrees with `bcdDevice 0108`. |
+| `sensor_size` | 4 bytes, width `b0+1`, height `b2+1` | `4f 00 4f 00`, 80 x 80 | Matches, off-by-one confirmed. |
+| `enrolled_num` | byte 1 is the count | `40 00`, count 0 | Matches. Byte 0 echoes the command's `0x40`. |
+| `finger_info` | 70 byte record per slot | **2 bytes, `40 ff`**, ids 0 to 9 | **Differs.** No 70 byte record seen. Meaning unresolved, see Q-002. |
 
 ---
 

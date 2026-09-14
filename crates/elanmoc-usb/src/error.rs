@@ -19,7 +19,13 @@ pub enum UsbError {
     #[error("cancelled")]
     Cancelled,
     #[error("short read: wanted {wanted}, got {got}")]
-    ShortRead { wanted: usize, got: usize },
+    ShortRead {
+        wanted: usize,
+        got: usize,
+        /// What did arrive. `finger_info` has a documented two byte error form
+        /// against an expected length of 70, so these bytes still parse.
+        data: Vec<u8>,
+    },
     #[error("device disconnected")]
     Disconnected,
     #[error("endpoint stalled")]

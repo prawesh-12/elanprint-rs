@@ -159,11 +159,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "elanmoc-proto",
  "elanmoc-usb",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "elanmoc-proto"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

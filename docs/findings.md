@@ -134,3 +134,73 @@ Consequence: usbmon captures require root. Per the user, Phase 2 proceeds
 without them. The parsed response is compared against `docs/protocol.md` only,
 with no independent wire view. Any disagreement gets recorded here rather than
 resolved against a capture.
+
+## 2026-09-14 Phase 2, four read-only commands confirmed on 0c90
+
+No usbmon capture (needs root, see above). Evidence is the transport's own hex
+log of each transfer, at `RUST_LOG=elanmoc_usb=debug`. Every value below was
+read three or more times and did not change.
+
+### fw_ver
+
+```
+OUT ep 0x01  40 19
+IN  ep 0x83  01 08
+```
+
+Two bytes, as documented. Major 1, minor 8, so firmware 1.8.
+
+Corroboration: `bcdDevice` in the device descriptor is `0108`. The command's
+answer and the descriptor agree, which makes a coincidence unlikely. This is a
+real version, not garbage. GATE 2 is GO.
+
+### sensor_size
+
+```
+OUT ep 0x01  00 0c
+IN  ep 0x83  4f 00 4f 00
+```
+
+Four bytes, as documented. `0x4f + 1 = 80` both times, so the sensor is
+80 x 80. The documented off-by-one is present: without it the value would be
+79 x 79, and a 79 pixel sensor is not a plausible number. Bytes 1 and 3 are
+zero, consistent with two little endian 16 bit fields.
+
+### enrolled_num
+
+```
+OUT ep 0x01  40 ff 04
+IN  ep 0x83  40 00
+```
+
+Byte 1 is the count, as documented: 0. No fingers are enrolled on this device.
+Byte 0 is `0x40`, which is the first byte of the command. Every status reply
+seen so far starts `0x40`, so byte 0 looks like an echo of the command class
+rather than data.
+
+### finger_info, ids 0 to 9
+
+```
+OUT ep 0x01  40 ff 12 00      (through 40 ff 12 09)
+IN  ep 0x83  40 ff
+```
+
+**Difference from the documented source.** The table says `in_len` is 70.
+0c90 returned **2 bytes, `40 ff`**, for every id from 0 to 9, ten out of ten.
+The transport reported a short read and kept the bytes, so nothing was lost.
+
+Per `docs/protocol.md` the two byte form means byte 1 is an error code, and
+`0xff` in byte 1 separately means the sensor is in a stuck state. Both readings
+apply to `40 ff` and this run cannot tell them apart. The plainer reading, given
+`enrolled_num` is 0 and all ten ids answered identically, is that 0c90 answers
+`40 ff` for a slot that holds nothing, where 0c4c returns a 70 byte record whose
+last byte is `0xff`. That is a guess about meaning, not an observation, and it
+is recorded as such. See Q-002.
+
+The parser was not changed to make 70 bytes appear. It reports what arrived.
+
+### Session hygiene
+
+Ten `finger_info` commands in a row, then `fw_ver`, `sensor_size` and
+`enrolled_num` again: all three returned their earlier values. No desync, no
+stale response, and `abort` was never needed because nothing failed.
