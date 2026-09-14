@@ -205,6 +205,37 @@ impl Device {
         Ok(buf)
     }
 
+    /// Post a read on two IN endpoints at once and take whichever answers first.
+    ///
+    /// Sends nothing. The losing transfer is cancelled when its future drops.
+    /// Used to find out which endpoint a reply actually arrives on, which a
+    /// usbmon capture cannot show: without a posted read the device is NAKed
+    /// and nothing is recorded.
+    pub async fn recv_first(
+        &self,
+        a: EndpointIn,
+        b: EndpointIn,
+        len: usize,
+        timeout: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<(EndpointIn, Vec<u8>), UsbError> {
+        let want = len.next_multiple_of(MAX_PACKET).max(MAX_PACKET);
+        let on_a = self.interface.bulk_in(a.address(), RequestBuffer::new(want));
+        let on_b = self.interface.bulk_in(b.address(), RequestBuffer::new(want));
+
+        let (ep, completion) = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(UsbError::Cancelled),
+            () = tokio::time::sleep(timeout) => return Err(UsbError::Timeout(timeout)),
+            completion = on_a => (a, completion),
+            completion = on_b => (b, completion),
+        };
+
+        let bytes = completion.into_result()?;
+        tracing::debug!(dir = "IN", ep = ep.address(), len = bytes.len(), bytes = %hex(&bytes));
+        Ok((ep, bytes))
+    }
+
     /// Send a command and read its reply as one operation.
     pub async fn cmd(
         &self,

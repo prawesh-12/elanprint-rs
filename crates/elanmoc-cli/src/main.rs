@@ -37,6 +37,9 @@ enum Action {
         /// Seconds to wait for a touch, overriding the protocol default.
         #[arg(long)]
         wait: Option<u64>,
+        /// Post reads on 0x83 and 0x84 at once and report which one answers.
+        #[arg(long)]
+        dual: bool,
     },
     /// Send `abort` on its own, from an idle session.
     ///
@@ -74,8 +77,8 @@ async fn main() -> Result<()> {
         Action::FingerInfo { id } => {
             session(&cancel, move |d, c| Box::pin(finger_info(d, c, id))).await
         }
-        Action::Verify { wait } => {
-            session(&cancel, move |d, c| Box::pin(verify(d, c, wait))).await
+        Action::Verify { wait, dual } => {
+            session(&cancel, move |d, c| Box::pin(verify(d, c, wait, dual))).await
         }
         Action::Abort { wait } => {
             session(&cancel, move |d, c| Box::pin(abort_alone(d, c, wait))).await
@@ -198,14 +201,36 @@ async fn finger_info(device: &Device, cancel: &CancellationToken, id: u8) -> Res
     Ok(())
 }
 
-async fn verify(device: &Device, cancel: &CancellationToken, wait: Option<u64>) -> Result<()> {
+async fn verify(
+    device: &Device,
+    cancel: &CancellationToken,
+    wait: Option<u64>,
+    dual: bool,
+) -> Result<()> {
     let cmd = Cmd::Verify;
     let timeout = wait.map_or_else(|| cmd.timeout(), Duration::from_secs);
     println!("out:           {}  on 0x01", elanmoc_usb::hex(&cmd.encode()));
-    println!("waiting up to {timeout:?} for a touch, reply expected on 0x84 ...");
 
     let started = Instant::now();
-    let (raw, parsed) = send_waiting(device, cmd, timeout, cancel).await?;
+    let (raw, parsed) = if dual {
+        println!("waiting up to {timeout:?}, reads posted on BOTH 0x83 and 0x84 ...");
+        device.send(&cmd.encode(), Duration::from_secs(1), cancel).await?;
+        let (ep, bytes) = device
+            .recv_first(
+                EndpointIn::Status,
+                EndpointIn::TouchWait,
+                cmd.expected_len(),
+                timeout,
+                cancel,
+            )
+            .await?;
+        println!("answered on:   0x{:02x}", ep.address());
+        let parsed = Response::parse(&cmd, &bytes)?;
+        (bytes, parsed)
+    } else {
+        println!("waiting up to {timeout:?} for a touch, reply expected on 0x84 ...");
+        send_waiting(device, cmd, timeout, cancel).await?
+    };
     let elapsed = started.elapsed();
 
     println!("in:            {}  after {elapsed:.2?}", elanmoc_usb::hex(&raw));
