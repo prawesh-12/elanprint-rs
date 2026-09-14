@@ -64,3 +64,28 @@ bcdHID 1.10, bCountryCode 0, bNumDescriptors 1, then type 0x22 (report)
 length 0x0015 (21 bytes). A HID descriptor on an interface whose class is 255
 is unusual. Not acted on. Recorded because it may explain how the Windows
 driver talks to the chip.
+
+### Correction to the 2026-09-14 endpoint entry
+
+The entry above called `0x81`, `0x02`, `0x03` and `0x04` extra endpoints the
+source does not mention. That framing was wrong. The eight endpoints are four
+bidirectional pairs: `0x01`/`0x81`, `0x02`/`0x82`, `0x03`/`0x83`, `0x04`/`0x84`.
+The protocol uses the OUT half of pair 1 and the IN halves of pairs 2, 3 and 4.
+The four unused ones are the other halves of the same pairs, not separate
+channels. The observed bytes in that entry are unchanged and correct.
+
+## 2026-09-14 Task 0.2 device node permissions, before any udev rule
+
+```
+crw-rw-r-- 1 root root 189, 1 /dev/bus/usb/001/002
+```
+
+Owner root, group root, mode 0664. User `prawesh` (uid 1000) has read and no
+write, so USB transfers are not possible as a non-root user right now. No
+existing rule under `/etc/udev/rules.d` or `/usr/lib/udev/rules.d` mentions
+`04f3`. The session is local and active (`loginctl`: `Remote=no`, `Active=yes`),
+which is what `uaccess` requires.
+
+`udevadm verify udev/70-elanmoc.rules` passes, 1 checked, 0 failed.
+
+The rule is not installed. Installing it needs user approval.

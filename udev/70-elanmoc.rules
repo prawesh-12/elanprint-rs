@@ -1,0 +1,4 @@
+# ELAN 04f3:0c90 fingerprint sensor. Userspace driver, no kernel module.
+# uaccess grants the ACL to the active local seat user. MODE alone would not:
+# without a GROUP the group stays root.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="04f3", ATTRS{idProduct}=="0c90", MODE="0660", TAG+="uaccess"
