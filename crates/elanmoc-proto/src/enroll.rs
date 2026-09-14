@@ -306,7 +306,10 @@ mod tests {
                 EnrollAction::EmitProgress { done, total },
                 "sample {done}"
             );
-            let send = sm.take_send().expect("progress is followed by a send");
+            let send = match sm.take_send() {
+                Some(s) => s,
+                None => panic!("progress is followed by a send"),
+            };
             if done < total {
                 let EnrollAction::Send(bytes) = send else {
                     panic!("expected resend");

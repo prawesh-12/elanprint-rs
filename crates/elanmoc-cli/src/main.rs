@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use elanmoc_proto::{
     Command as Cmd, Enroll, EnrollAction, ReplyEndpoint, Response, SlotState, Status,
 };
+use elanmoc_store::FINGER_NAMES;
 use elanmoc_usb::{Device, EndpointIn, UsbError};
 use tokio_util::sync::CancellationToken;
 
@@ -71,6 +72,15 @@ enum Action {
         #[arg(long)]
         prime: bool,
     },
+    /// Compare the host store against the device. Prunes nothing by default.
+    Sync {
+        /// Path to prints.json. Defaults to /var/lib/elanmoc/prints.json.
+        #[arg(long)]
+        store: Option<String>,
+        /// Drop entries the device proves stale. Ambiguous ones stay.
+        #[arg(long)]
+        prune: bool,
+    },
     /// Print the planned enroll bytes for a slot. Sends nothing.
     EnrollPlan {
         /// On-chip slot to enroll into.
@@ -135,6 +145,12 @@ async fn main() -> Result<()> {
         Action::Enroll { finger, slot, wait } => {
             session(&cancel, move |d, c| {
                 Box::pin(enroll(d, c, finger, slot, wait))
+            })
+            .await
+        }
+        Action::Sync { store, prune } => {
+            session(&cancel, move |d, c| {
+                Box::pin(sync(d, c, store, prune))
             })
             .await
         }
@@ -410,20 +426,6 @@ fn describe(state: &SlotState) -> String {
     }
 }
 
-/// fprintd finger names. The store will own this list later.
-const FINGER_NAMES: [&str; 10] = [
-    "left-thumb",
-    "left-index-finger",
-    "left-middle-finger",
-    "left-ring-finger",
-    "left-little-finger",
-    "right-thumb",
-    "right-index-finger",
-    "right-middle-finger",
-    "right-ring-finger",
-    "right-little-finger",
-];
-
 /// Print the exact bytes an enroll of `slot` will send. No device I/O.
 fn enroll_plan(slot: u8) {
     use elanmoc_proto::{TOTAL_ENROLL_ATTEMPTS, sub_id};
@@ -617,6 +619,61 @@ async fn drain_trailing(device: &Device, cancel: &CancellationToken) {
         }
         Err(e) => println!("trailing: unreadable ({e})"),
     }
+}
+
+/// Compare the host store against the device. Read only unless `--prune`.
+async fn sync(
+    device: &Device,
+    cancel: &CancellationToken,
+    store_path: Option<String>,
+    prune: bool,
+) -> Result<()> {
+    use elanmoc_store::{MAX_SLOT, Store, reconcile};
+    let path = store_path.unwrap_or_else(|| elanmoc_store::DEFAULT_PATH.to_string());
+
+    let (_, parsed) = send(device, Cmd::EnrolledNum, cancel).await?;
+    let Response::EnrolledNum { count } = parsed else {
+        bail!("enrolled_num gave unexpected {parsed:?}");
+    };
+    println!("device counts: {count}");
+
+    let mut records = Vec::new();
+    for id in 0..=MAX_SLOT {
+        match send(device, Cmd::FingerInfo(id), cancel).await {
+            Ok((_, Response::FingerInfo { state, .. })) => records.push((id, state)),
+            Ok((_, other)) => bail!("finger_info({id}) gave unexpected {other:?}"),
+            Err(e) => bail!("finger_info({id}): {e}"),
+        }
+    }
+
+    let store = Store::open(std::path::Path::new(&path))?;
+    let report = reconcile(store.prints(), count, &records);
+    for e in &report.confirmed {
+        println!("confirmed:   {}/{} in slot {} ({})", e.user, e.finger, e.slot, e.reason);
+    }
+    for e in &report.unconfirmed {
+        println!("unconfirmed: {}/{} in slot {} ({})", e.user, e.finger, e.slot, e.reason);
+    }
+    for e in &report.stale {
+        println!("stale:       {}/{} in slot {} ({})", e.user, e.finger, e.slot, e.reason);
+    }
+    for w in &report.warnings {
+        println!("warning:     {w}");
+    }
+    if report.confirmed.is_empty() && report.unconfirmed.is_empty() && report.stale.is_empty() {
+        println!("store holds nothing");
+    }
+    if prune && !report.stale.is_empty() {
+        let mut store = store;
+        for e in &report.stale {
+            store.remove(&e.user, &e.finger);
+        }
+        store.save()?;
+        println!("pruned {} entries proven stale, ambiguous ones kept", report.stale.len());
+    } else if prune {
+        println!("nothing proven stale, file unchanged");
+    }
+    Ok(())
 }
 
 async fn probe(check_timeout: bool, cancel: &CancellationToken) -> Result<()> {

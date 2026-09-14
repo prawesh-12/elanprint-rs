@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 elanmoc-usb.workspace = true
 elanmoc-proto.workspace = true
+elanmoc-store.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio = { workspace = true, features = ["signal"] }

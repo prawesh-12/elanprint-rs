@@ -800,7 +800,10 @@ mod tests {
     fn delete_subsid_takes_bytes_two_onward() {
         let mut record = vec![0u8; 70];
         record[2] = 0xab;
-        let cmd = Command::delete_subsid(0xf5, &record).unwrap();
+        let cmd = match Command::delete_subsid(0xf5, &record) {
+            Ok(c) => c,
+            Err(e) => panic!("70 byte record builds: {e}"),
+        };
         let out = cmd.encode();
         assert_eq!(out.len(), 72);
         assert_eq!(out[3], 0xf5);
