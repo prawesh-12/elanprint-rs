@@ -919,6 +919,7 @@ dependencies = [
  "elanmoc-proto",
  "elanmoc-store",
  "elanmoc-usb",
+ "futures-util",
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
