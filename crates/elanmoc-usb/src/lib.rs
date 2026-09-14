@@ -263,6 +263,43 @@ impl Device {
     }
 }
 
+/// What a protocol driver needs from the wire.
+///
+/// [`Device`] is the real implementation. A test implementation records the
+/// bytes a caller sends, which is how the daemon's erase paths are proven
+/// without a sensor attached.
+pub trait Transport: Sized + Send + Sync + 'static {
+    /// Find and claim the sensor.
+    fn open() -> impl std::future::Future<Output = Result<Self, UsbError>> + Send;
+
+    /// Send one command and read its reply.
+    fn cmd<'a>(
+        &'a self,
+        out: &'a [u8],
+        ep: EndpointIn,
+        in_len: usize,
+        timeout: Duration,
+        cancel: &'a CancellationToken,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, UsbError>> + Send + 'a;
+}
+
+impl Transport for Device {
+    fn open() -> impl std::future::Future<Output = Result<Self, UsbError>> + Send {
+        Device::open()
+    }
+
+    fn cmd<'a>(
+        &'a self,
+        out: &'a [u8],
+        ep: EndpointIn,
+        in_len: usize,
+        timeout: Duration,
+        cancel: &'a CancellationToken,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, UsbError>> + Send + 'a {
+        Device::cmd(self, out, ep, in_len, timeout, cancel)
+    }
+}
+
 /// Format bytes as lowercase space separated hex, the form used in `findings.md`.
 pub fn hex(bytes: &[u8]) -> String {
     bytes
