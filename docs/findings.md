@@ -979,3 +979,40 @@ match on finger id 0. Latencies in seconds: 41.72, 46.71, 43.46, 84.55, 45.85.
 
 `enrolled_num` after the series: `40 01`. The decoded capture of the whole
 series contains no `40 ff 05`, no `40 ff 13` and no `40 ff 99`.
+
+---
+
+## 2026-09-14 Step 6: the template survives a full reboot
+
+Full machine reboot. No `reset_device` was sent; the sensor was power cycled
+with the laptop. It re-enumerated at a new address (bus 1 device 006, was
+device 002).
+
+Read only, before any touch:
+
+```
+40 19     ->  01 08        fw 1.8
+00 0c     ->  4f 00 4f 00  80 x 80
+40 ff 04  ->  40 01        count 1
+```
+
+Then one primed `verify` claim, D-011 followed:
+
+```
+40 ff 03  ->  40 00        on 0x84, match on finger id 0, 25.92 s
+```
+
+`enrolled_num` after: `40 01`. Slot 0 holds a template that survives power
+loss and still matches. That is flash, not session state.
+
+### The reboot reproduced the bug's precondition by itself
+
+`/tmp` is emptied at boot by `D /tmp` in `/usr/lib/tmpfiles.d/tmp.conf`, so
+the dev store was gone while the device still counted 1. That is exactly the
+state that loses a template under the old `free_slot`: an empty store, a
+device holding a print, and `finger_info` unable to tell the difference. The
+next enrol would have been handed slot 0. Under `writable_slots` the first
+candidate is 1. The store was restored from a copy taken before the reboot.
+
+Recorded as a live confirmation of the precondition, not of the erase: no
+enrol was run in that state.
