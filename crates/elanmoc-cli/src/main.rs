@@ -324,14 +324,17 @@ async fn one_verify(
     println!("in:            {}  after {elapsed:.2?}", elanmoc_usb::hex(&raw));
     if let Response::Verify { byte0, status } = parsed {
         println!("byte 0:        0x{byte0:02x}");
-        match status {
-            Status::NotEnrolled => {
+        match elanmoc_proto::VerifyOutcome::classify(status) {
+            Ok(elanmoc_proto::VerifyOutcome::NoMatch) => {
                 println!("status:        0xfd, finger not enrolled. Expected with 0 enrolled.");
             }
-            Status::Ok(id) => println!("status:        match on finger id {id}"),
-            Status::Retry(r) => println!("status:        retry, {r:?}"),
-            Status::MaxEnrolled => println!("status:        0xdd, maximum enrolled reached"),
-            Status::Unknown(b) => println!("status:        undocumented 0x{b:02x}, logged not assumed"),
+            Ok(elanmoc_proto::VerifyOutcome::Match(id)) => {
+                println!("status:        match on finger id {id}");
+            }
+            Ok(elanmoc_proto::VerifyOutcome::Retry(r)) => {
+                println!("status:        retry, {r:?}");
+            }
+            Err(e) => println!("status:        unusable as verify answer: {e}"),
         }
     }
     Ok(())

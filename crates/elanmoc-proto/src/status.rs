@@ -57,6 +57,36 @@ impl Status {
     }
 }
 
+/// A verify answer with no conflation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyOutcome {
+    /// Chip matched the finger with this id.
+    Match(u8),
+    /// `0xfd`. The finger is unknown, not a capture failure.
+    NoMatch,
+    /// Bad contact. Ask for another touch, not a failure.
+    Retry(Retry),
+}
+
+impl VerifyOutcome {
+    /// Sort a verify status into its outcome.
+    pub fn classify(status: Status) -> Result<Self, crate::ProtoError> {
+        match status {
+            Status::Ok(id) => Ok(Self::Match(id)),
+            Status::NotEnrolled => Ok(Self::NoMatch),
+            Status::Retry(r) => Ok(Self::Retry(r)),
+            Status::MaxEnrolled => Err(crate::ProtoError::Device {
+                command: "verify",
+                code: 0xdd,
+            }),
+            Status::Unknown(b) => Err(crate::ProtoError::Device {
+                command: "verify",
+                code: b,
+            }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +118,34 @@ mod tests {
     #[test]
     fn undocumented_high_nibble_is_unknown_not_ok() {
         assert_eq!(Status::classify(0x99), Status::Unknown(0x99));
+    }
+
+    #[test]
+    fn verify_match_carries_the_finger_id() {
+        assert_eq!(
+            VerifyOutcome::classify(Status::Ok(2)),
+            Ok(VerifyOutcome::Match(2))
+        );
+    }
+
+    #[test]
+    fn verify_fd_is_no_match_not_a_retry() {
+        assert_eq!(
+            VerifyOutcome::classify(Status::NotEnrolled),
+            Ok(VerifyOutcome::NoMatch)
+        );
+    }
+
+    #[test]
+    fn verify_retry_stays_a_retry() {
+        assert_eq!(
+            VerifyOutcome::classify(Status::Retry(Retry::Dirty)),
+            Ok(VerifyOutcome::Retry(Retry::Dirty))
+        );
+    }
+
+    #[test]
+    fn verify_dd_is_an_error_not_an_outcome() {
+        assert!(VerifyOutcome::classify(Status::MaxEnrolled).is_err());
     }
 }

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 pub use enroll::{Enroll, EnrollAction, EnrollError, EnrollState};
 pub use error::ProtoError;
-pub use status::{Retry, Status};
+pub use status::{Retry, Status, VerifyOutcome};
 
 mod enroll;
 mod error;
