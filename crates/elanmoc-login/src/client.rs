@@ -202,7 +202,8 @@ impl FingerprintClient {
                         }
                         ("enroll-failed" | "enroll-data-full" | "enroll-duplicate"
                         | "enroll-unknown-error" | "enroll-disconnected", true) => {
-                            let _ = tx.send(EnrollEvent::Failed(result)).await;
+                            let text = crate::copy::enroll_failure(&result);
+                            let _ = tx.send(EnrollEvent::Failed(text)).await;
                             return Ok(());
                         }
                         ("enroll-retry-scan", false) => {

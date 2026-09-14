@@ -22,3 +22,14 @@ pub const DELETE: &str = "delete";
 pub const CONFIRM_DELETE: &str = "confirm";
 pub const ENROLLED_LIST: &str = "enrolled fingers";
 pub const NO_FINGERS: &str = "no fingers enrolled yet";
+
+/// A terminal enroll status as something a person can act on.
+pub fn enroll_failure(result: &str) -> String {
+    match result {
+        "enroll-duplicate" => "that finger is already enrolled, delete it first".to_string(),
+        "enroll-data-full" => "the sensor has no free slots left".to_string(),
+        "enroll-disconnected" => "the reader disconnected".to_string(),
+        "enroll-failed" | "enroll-unknown-error" => "enrol failed, see log".to_string(),
+        other => format!("enrol ended: {other}"),
+    }
+}
