@@ -731,3 +731,22 @@ file: "store holds nothing". With `{"alice":{"right-index-finger":1}}`:
 reported stale ("device holds nothing, enrolled_num is 0"), and `--prune`
 removed it, leaving `{}`. Ambiguous-slot behavior is unit tests only until a
 second slot is occupied.
+
+---
+
+## 2026-09-14 Transient 70 byte finger_info, seen once
+
+During the audit fixes, one primed `finger_info 0` returned a 70 byte
+occupied record (`40 00` plus 68 zeros) with the count at 1. Every other
+read of slot 0 before and since, about fifteen in fresh and primed claims,
+returned 2 bytes `40 ff`.
+
+Reproduction tries, all read-only, all negative: idle abort then read,
+daemon claim plus release (which now sends abort) then immediate read.
+The single hit came right after a daemon release carrying the first
+abort this daemon ever sent, but the same sequence does not reproduce it.
+
+Stated as a transient with unknown mechanism, not a finding. Leading
+hypothesis, labeled as one: reply length depends on chip session history,
+same family as the arming rule. The parser already accepts both forms, so
+no code changes. The sync rule stands: one read never proves a slot state.

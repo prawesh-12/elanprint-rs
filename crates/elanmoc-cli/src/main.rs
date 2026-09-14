@@ -47,8 +47,8 @@ enum Action {
         #[arg(long)]
         dual: bool,
         /// Send `enrolled_num` first, in the same session, as the source's
-        /// enroll sequence does.
-        #[arg(long)]
+        /// enroll sequence does. On without it the touch-wait hangs.
+        #[arg(long, default_value_t = true, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
         prime: bool,
         /// How many times to run `verify` in the same claim. Arming is sent
         /// once, at the front, never between repeats.

@@ -91,6 +91,9 @@ impl LoginApp {
     }
 
     fn start_login(&mut self) {
+        if self.events.is_some() {
+            return;
+        }
         let Some(client) = self.client.clone() else {
             self.status = "connect first".to_string();
             return;
@@ -121,8 +124,10 @@ impl LoginApp {
     }
 
     fn logout(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            cancel.cancel();
+        }
         self.events = None;
-        self.cancel = None;
         self.screen = Screen::Ready;
         self.status = "signed out".to_string();
     }
@@ -377,8 +382,13 @@ fn form_block(ui: &mut egui::Ui, app: &mut LoginApp) {
             }
         }
         _ => {
-            ui.add_enabled_ui(armed, |ui| {
-                if full_button(ui, copy::LOGIN).clicked() {
+            let retry = matches!(
+                app.screen,
+                Screen::Denied | Screen::Failed | Screen::Locked
+            );
+            ui.add_enabled_ui(armed || retry, |ui| {
+                let label = if retry { copy::TRY_AGAIN } else { copy::LOGIN };
+                if full_button(ui, label).clicked() {
                     app.start_login();
                 }
             });

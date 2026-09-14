@@ -96,7 +96,7 @@ impl Device {
 
     async fn release(&mut self) -> Result<(), FprintError> {
         self.stop_running().await;
-        self.worker.lock().await.release();
+        self.worker.lock().await.release().await;
         Ok(())
     }
 

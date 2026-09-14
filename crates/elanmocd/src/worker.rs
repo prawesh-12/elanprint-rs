@@ -59,10 +59,14 @@ pub enum WorkerError {
 }
 
 /// Holds the USB claim, the arming and the claimed user.
+///
+/// `armed` tracks whether this handle answered `enrolled_num` since it was
+/// opened or last aborted. Every touch-wait runs only while it holds.
 pub struct Worker {
     usb: Option<Device>,
     claimed: Option<String>,
     busy: bool,
+    armed: bool,
     store_path: PathBuf,
 }
 
@@ -73,6 +77,7 @@ impl Worker {
             usb: None,
             claimed: None,
             busy: false,
+            armed: false,
             store_path,
         }
     }
@@ -118,36 +123,66 @@ impl Worker {
     }
 
     /// Open the sensor, arm the session, remember the user.
+    ///
+    /// Re-claim by the same user re-arms. A different user gets `Busy`.
     pub async fn claim(&mut self, user: String) -> Result<(), WorkerError> {
         if self.busy {
             return Err(WorkerError::Busy);
+        }
+        if let Some(other) = self.claimed.as_ref() {
+            if *other != user {
+                return Err(WorkerError::Busy);
+            }
         }
         if self.usb.is_none() {
             let usb = Device::open().await?;
             self.usb = Some(usb);
         }
-        let cancel = CancellationToken::new();
-        let out = Command::EnrolledNum.encode();
-        let armed = match self.usb.as_ref() {
-            Some(usb) => {
-                usb.cmd(
-                    &out,
-                    EndpointIn::Status,
-                    Command::EnrolledNum.expected_len(),
-                    Command::EnrolledNum.timeout(),
-                    &cancel,
-                )
-                .await
-            }
-            None => return Err(WorkerError::Unclaimed),
-        };
-        armed?;
+        self.send_arm().await?;
+        self.armed = true;
         self.claimed = Some(user);
         Ok(())
     }
 
-    /// Release the claim. The USB handle stays open for the next claim.
-    pub fn release(&mut self) {
+    /// Send `enrolled_num` on the held handle. Sets nothing by itself.
+    async fn send_arm(&self) -> Result<(), WorkerError> {
+        let usb = self.usb()?;
+        let cancel = CancellationToken::new();
+        let out = Command::EnrolledNum.encode();
+        usb.cmd(
+            &out,
+            EndpointIn::Status,
+            Command::EnrolledNum.expected_len(),
+            Command::EnrolledNum.timeout(),
+            &cancel,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// End the chip session without dropping the handle. Best effort.
+    async fn abort_session(&self) {
+        if let Ok(usb) = self.usb() {
+            let cancel = CancellationToken::new();
+            let cmd = Command::Abort;
+            let _ = usb
+                .cmd(
+                    &cmd.encode(),
+                    EndpointIn::Status,
+                    cmd.expected_len(),
+                    cmd.timeout(),
+                    &cancel,
+                )
+                .await;
+        }
+    }
+
+    /// Release the claim, ending the chip session first.
+    ///
+    /// The USB handle stays open for the next claim, disarmed.
+    pub async fn release(&mut self) {
+        self.abort_session().await;
+        self.armed = false;
         self.claimed = None;
         self.busy = false;
     }
@@ -201,6 +236,9 @@ impl Worker {
     }
 
     /// Run one verify to a terminal answer, emitting signals on the way.
+    ///
+    /// Re-arms first when the flag is clear, aborts and disarms on error.
+    /// Happy paths send no extra bytes.
     pub async fn verify(
         &mut self,
         finger: String,
@@ -208,7 +246,18 @@ impl Worker {
         cancel: CancellationToken,
     ) -> Result<(), WorkerError> {
         self.try_begin()?;
+        if !self.armed {
+            if let Err(e) = self.send_arm().await {
+                self.finish();
+                return Err(e);
+            }
+            self.armed = true;
+        }
         let result = self.verify_loop(&finger, &tx, &cancel).await;
+        if result.is_err() {
+            self.abort_session().await;
+            self.armed = false;
+        }
         self.finish();
         result
     }
@@ -297,6 +346,9 @@ impl Worker {
     }
 
     /// Run one enroll to commit, emitting per-sample progress.
+    ///
+    /// Re-arms first when the flag is clear, aborts and disarms on error.
+    /// Happy paths send no extra bytes.
     pub async fn enroll(
         &mut self,
         finger: String,
@@ -304,7 +356,18 @@ impl Worker {
         cancel: CancellationToken,
     ) -> Result<(), WorkerError> {
         self.try_begin()?;
+        if !self.armed {
+            if let Err(e) = self.send_arm().await {
+                self.finish();
+                return Err(e);
+            }
+            self.armed = true;
+        }
         let result = self.enroll_loop(&finger, &tx, &cancel).await;
+        if result.is_err() {
+            self.abort_session().await;
+            self.armed = false;
+        }
         self.finish();
         result
     }
@@ -519,6 +582,7 @@ impl Worker {
         };
         if matches!(result, Err(WorkerError::Usb(UsbError::Disconnected))) {
             self.usb = None;
+            self.armed = false;
         }
         result
     }
