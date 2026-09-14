@@ -47,6 +47,10 @@ enum Action {
         /// enroll sequence does.
         #[arg(long)]
         prime: bool,
+        /// How many times to run `verify` in the same claim. Arming is sent
+        /// once, at the front, never between repeats.
+        #[arg(long, default_value_t = 1)]
+        repeat: u8,
     },
     /// Send `abort` on its own, from an idle session.
     ///
@@ -87,8 +91,16 @@ async fn main() -> Result<()> {
         Action::FingerInfo { id, prime } => {
             session(&cancel, move |d, c| Box::pin(finger_info(d, c, id, prime))).await
         }
-        Action::Verify { wait, dual, prime } => {
-            session(&cancel, move |d, c| Box::pin(verify(d, c, wait, dual, prime))).await
+        Action::Verify {
+            wait,
+            dual,
+            prime,
+            repeat,
+        } => {
+            session(&cancel, move |d, c| {
+                Box::pin(verify(d, c, wait, dual, prime, repeat))
+            })
+            .await
         }
         Action::Abort { wait } => {
             session(&cancel, move |d, c| Box::pin(abort_alone(d, c, wait))).await
@@ -228,6 +240,7 @@ async fn verify(
     wait: Option<u64>,
     dual: bool,
     prime: bool,
+    repeat: u8,
 ) -> Result<()> {
     if prime {
         let (raw, parsed) = send(device, Cmd::EnrolledNum, cancel).await?;
@@ -237,6 +250,21 @@ async fn verify(
         }
     }
 
+    for round in 1..=repeat {
+        if repeat > 1 {
+            println!("--- verify {round} of {repeat}, no re-arm between rounds ---");
+        }
+        one_verify(device, cancel, wait, dual).await?;
+    }
+    Ok(())
+}
+
+async fn one_verify(
+    device: &Device,
+    cancel: &CancellationToken,
+    wait: Option<u64>,
+    dual: bool,
+) -> Result<()> {
     let cmd = Cmd::Verify;
     let timeout = wait.map_or_else(|| cmd.timeout(), Duration::from_secs);
     println!("out:           {}  on 0x01", elanmoc_usb::hex(&cmd.encode()));
