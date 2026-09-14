@@ -251,7 +251,7 @@ fn reader_card(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
                 Screen::Disconnected => (egui::Color32::RED, "no reader"),
                 _ => (egui::Color32::GREEN, "reader ready"),
             };
-            ui.colored_label(dot, "●");
+            dot_mark(ui, dot, 9.0);
             ui.label(text);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("connect").clicked() {
@@ -320,7 +320,7 @@ fn verdict(ui: &mut egui::Ui, app: &LoginApp) {
     ui.vertical_centered(|ui| {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.colored_label(color, egui::RichText::new("●").size(22.0));
+            dot_mark(ui, color, 11.0);
             ui.label(egui::RichText::new(&app.status).size(19.0));
         });
     });
@@ -340,6 +340,12 @@ fn full_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
         egui::vec2(ui.available_width(), 44.0),
         egui::Button::new(egui::RichText::new(text).strong()),
     )
+}
+
+/// Filled status dot. Drawn, not a glyph: the default font lacks ●.
+fn dot_mark(ui: &mut egui::Ui, color: egui::Color32, radius: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(radius * 2.0, radius * 2.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), radius, color);
 }
 
 /// Fingerprint mark drawn from concentric arcs.
