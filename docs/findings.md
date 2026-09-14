@@ -750,3 +750,18 @@ Stated as a transient with unknown mechanism, not a finding. Leading
 hypothesis, labeled as one: reply length depends on chip session history,
 same family as the arming rule. The parser already accepts both forms, so
 no code changes. The sync rule stands: one read never proves a slot state.
+
+---
+
+## 2026-09-14 Phase 4 rejects: 10 of 10 no-match, handshake each run
+
+Ten separate primed `verify` claims with a non-enrolled finger, D-011 for
+every run: backgrounded, touch asked, log read only after the message.
+
+All ten answered `40 fd` on `0x84`, no-match. No retry code in any run, so
+nothing was re-run and nothing was excluded. Touch latencies in seconds:
+27.28, 8.76, 7.79, 7.66, 9.59, 6.18, 2.52, 2.32, 8.00, 2.03.
+
+Phase 4 is fully complete: 10 of 10 matches on id 0 plus 10 of 10
+no-matches on other fingers. The no-match path in the UI and the daemon
+mapping now rest on observed `0xfd`, not on assumption.
