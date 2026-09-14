@@ -8,9 +8,11 @@
 
 use std::time::Duration;
 
+pub use enroll::{Enroll, EnrollAction, EnrollError, EnrollState};
 pub use error::ProtoError;
-pub use status::Status;
+pub use status::{Retry, Status};
 
+mod enroll;
 mod error;
 mod status;
 
