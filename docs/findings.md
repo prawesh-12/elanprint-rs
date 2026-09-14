@@ -89,3 +89,48 @@ which is what `uaccess` requires.
 `udevadm verify udev/70-elanmoc.rules` passes, 1 checked, 0 failed.
 
 The rule is not installed. Installing it needs user approval.
+
+## 2026-09-14 Task 0.2 udev rule installed
+
+Installed with `tee` (`cp` is not permitted). `/etc/udev/rules.d/70-elanmoc.rules`
+md5 `196afa25e9050c4d2eaa7913057b6251`, identical to the repo copy.
+
+Before: `crw-rw-r-- root root 0664`, no ACL.
+After `udevadm control --reload-rules` plus the targeted add trigger:
+
+```
+crw-rw----+ 1 root root 189, 1 /dev/bus/usb/001/002
+user::rw-
+user:prawesh:rw-
+group::rw-
+mask::rw-
+other::---
+```
+
+`uaccess` applied on the first add trigger. No reboot, no replug, no rule
+variant. The earlier failure was that the file had never reached
+`/etc/udev/rules.d` at all, not anything about the rule's content.
+
+## 2026-09-14 Task 0.3 usbmon loaded, captures need root
+
+`sudo modprobe usbmon` succeeded, module resident. Nodes exist:
+
+```
+crw------- 1 root root 505, 0 /dev/usbmon0
+crw------- 1 root root 505, 1 /dev/usbmon1
+crw------- 1 root root 505, 2 /dev/usbmon2
+```
+
+`0600 root:root`. Reading `/dev/usbmon1` as uid 1000 gives EACCES.
+
+`wireshark-common 4.2.2-1.1build3` is installed, user is in group `wireshark`
+(gid 136), and `/usr/bin/dumpcap` is `root:wireshark 0750` with
+`cap_net_admin,cap_net_raw=eip`. `dumpcap -D` lists usbmon0/1/2, but an actual
+capture fails: those capabilities do not include `CAP_DAC_OVERRIDE`, so the
+0600 node still blocks the open. No udev rule ships to relax usbmon permissions
+on this system.
+
+Consequence: usbmon captures require root. Per the user, Phase 2 proceeds
+without them. The parsed response is compared against `docs/protocol.md` only,
+with no independent wire view. Any disagreement gets recorded here rather than
+resolved against a capture.
