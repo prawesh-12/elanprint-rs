@@ -403,3 +403,72 @@ documented. GATE 3a is not approached.
 for a stuck sensor is to run `verify`, and `verify` was run, but since it
 produced no reply it cannot be said to have been performed. Empty slot versus
 stuck sensor is still undecided.
+
+## 2026-09-14 `verify` ANSWERS when `enrolled_num` precedes it in the same session
+
+Probe 1. Touch confirmed by the user: flat pad, about 1 second, a few seconds
+after the run started. Commands unchanged, both already in the table, sent in
+the order the source's enroll sequence uses. Reads posted on `0x83` and `0x84`.
+
+```
+ 5.966  S  bulk OUT 0x01  -115    3  40 ff 04
+ 5.966  C  bulk OUT 0x01     0    3
+ 5.966  S  bulk IN  0x03  -115   64
+ 5.966  C  bulk IN  0x03     0    2  40 00
+ 5.967  S  bulk OUT 0x01  -115    3  40 ff 03
+ 5.967  C  bulk OUT 0x01     0    3
+ 5.967  S  bulk IN  0x03  -115   64
+ 5.967  S  bulk IN  0x04  -115   64
+26.838  C  bulk IN  0x04     0    2  40 fd
+26.838  C  bulk IN  0x03    -2    0
+```
+
+**`verify` replied `40 fd` on `0x84`, 20.87 seconds after the command**, which
+is the touch latency, not a protocol delay. Byte 0 is the `0x40` echo, byte 1 is
+`0xfd`, "finger not enrolled", exactly what `docs/protocol.md` predicts with
+`enrolled_num` at 0.
+
+Three things are now settled:
+
+- **Ordering was the cause.** The only difference from the three silent runs is
+  that `enrolled_num` (`40 ff 04`) was sent first, in the same claim. No new
+  bytes, no changed bytes, no new endpoint.
+- **The documented endpoint mapping is correct.** The reply came on `0x84`, the
+  touch-wait endpoint, while the `0x83` read posted alongside it was still
+  pending and was unlinked at `-2`. The dual read earned its keep by proving
+  this rather than assuming it.
+- **The touch-wait path works.** `0x84` delivers, timeouts and cancellation
+  behave, and the earlier silences were a missing precondition, not a broken
+  read path.
+
+### Q-002 resolved: empty slot, not a stuck sensor
+
+`docs/protocol.md` says byte 1 of `0xff` means the sensor is stuck and that the
+source's remedy is to run `verify`. `verify` has now genuinely run and returned
+`0xfd`. `finger_info 0` afterwards still returns `40 ff`:
+
+- in a fresh session: `40 ff`
+- in a primed session, `enrolled_num` then `finger_info` in the same claim:
+  `40 ff`
+- all ten ids 0 to 9, primed: `40 ff`
+
+The documented remedy was applied and changed nothing, so `0xff` here is not the
+stuck state. With `enrolled_num` at 0, `0xff` in byte 1 of `finger_info` is
+0c90's answer for a slot that holds nothing. Q-002 closes on the empty-slot
+reading.
+
+Note on method: the first `finger_info 0` after the successful `verify` ran as a
+separate CLI process, so a fresh unprimed claim. That was not the test the user
+asked for. It was re-run primed, in one session, and gave the same `40 ff`.
+
+### Phase 2 confirmations re-checked after arming
+
+`fw_ver` `01 08`, `sensor_size` `4f 00 4f 00` (80 x 80), `enrolled_num` `40 00`.
+Identical to the values recorded before any `verify` had ever succeeded. The
+config queries were not affected by the sensor being unarmed, so the Phase 2
+confirmations stand as taken.
+
+`enrolled_num` returned `40 00` again in the primed run, unchanged. Under the
+byte 0 reading that is status 0 with count 0, and those two coincide at zero, so
+this reply cannot yet separate the two fields. Anything other than `40 00` would
+have distinguished them. It did not appear.

@@ -29,6 +29,9 @@ enum Action {
     FingerInfo {
         /// Finger id.
         id: u8,
+        /// Send `enrolled_num` first, in the same session.
+        #[arg(long)]
+        prime: bool,
     },
     /// Wait for a touch and ask the chip whether it matches an enrolled finger.
     ///
@@ -40,6 +43,10 @@ enum Action {
         /// Post reads on 0x83 and 0x84 at once and report which one answers.
         #[arg(long)]
         dual: bool,
+        /// Send `enrolled_num` first, in the same session, as the source's
+        /// enroll sequence does.
+        #[arg(long)]
+        prime: bool,
     },
     /// Send `abort` on its own, from an idle session.
     ///
@@ -54,6 +61,9 @@ enum Action {
         /// Highest id to read.
         #[arg(long, default_value_t = 9)]
         upto: u8,
+        /// Send `enrolled_num` first, in the same session.
+        #[arg(long)]
+        prime: bool,
     },
 }
 
@@ -74,16 +84,18 @@ async fn main() -> Result<()> {
         Action::Probe { check_timeout } => probe(check_timeout, &cancel).await,
         Action::FwVer => session(&cancel, |d, c| Box::pin(fw_ver(d, c))).await,
         Action::Info => session(&cancel, |d, c| Box::pin(info(d, c))).await,
-        Action::FingerInfo { id } => {
-            session(&cancel, move |d, c| Box::pin(finger_info(d, c, id))).await
+        Action::FingerInfo { id, prime } => {
+            session(&cancel, move |d, c| Box::pin(finger_info(d, c, id, prime))).await
         }
-        Action::Verify { wait, dual } => {
-            session(&cancel, move |d, c| Box::pin(verify(d, c, wait, dual))).await
+        Action::Verify { wait, dual, prime } => {
+            session(&cancel, move |d, c| Box::pin(verify(d, c, wait, dual, prime))).await
         }
         Action::Abort { wait } => {
             session(&cancel, move |d, c| Box::pin(abort_alone(d, c, wait))).await
         }
-        Action::Slots { upto } => session(&cancel, move |d, c| Box::pin(slots(d, c, upto))).await,
+        Action::Slots { upto, prime } => {
+            session(&cancel, move |d, c| Box::pin(slots(d, c, upto, prime))).await
+        }
     }
 }
 
@@ -191,7 +203,16 @@ async fn info(device: &Device, cancel: &CancellationToken) -> Result<()> {
     Ok(())
 }
 
-async fn finger_info(device: &Device, cancel: &CancellationToken, id: u8) -> Result<()> {
+async fn finger_info(
+    device: &Device,
+    cancel: &CancellationToken,
+    id: u8,
+    prime: bool,
+) -> Result<()> {
+    if prime {
+        let (raw, _) = send(device, Cmd::EnrolledNum, cancel).await?;
+        println!("enrolled_num:  {}", elanmoc_usb::hex(&raw));
+    }
     let (raw, parsed) = send(device, Cmd::FingerInfo(id), cancel).await?;
     println!("out:           {}", elanmoc_usb::hex(&Cmd::FingerInfo(id).encode()));
     println!("in ({:>2}):       {}", raw.len(), elanmoc_usb::hex(&raw));
@@ -206,7 +227,16 @@ async fn verify(
     cancel: &CancellationToken,
     wait: Option<u64>,
     dual: bool,
+    prime: bool,
 ) -> Result<()> {
+    if prime {
+        let (raw, parsed) = send(device, Cmd::EnrolledNum, cancel).await?;
+        println!("enrolled_num:  {}", elanmoc_usb::hex(&raw));
+        if let Response::EnrolledNum { count } = parsed {
+            println!("enrolled:      {count}");
+        }
+    }
+
     let cmd = Cmd::Verify;
     let timeout = wait.map_or_else(|| cmd.timeout(), Duration::from_secs);
     println!("out:           {}  on 0x01", elanmoc_usb::hex(&cmd.encode()));
@@ -282,7 +312,16 @@ async fn abort_alone(
     }
 }
 
-async fn slots(device: &Device, cancel: &CancellationToken, upto: u8) -> Result<()> {
+async fn slots(
+    device: &Device,
+    cancel: &CancellationToken,
+    upto: u8,
+    prime: bool,
+) -> Result<()> {
+    if prime {
+        let (raw, _) = send(device, Cmd::EnrolledNum, cancel).await?;
+        println!("enrolled_num:  {}", elanmoc_usb::hex(&raw));
+    }
     for id in 0..=upto {
         match send(device, Cmd::FingerInfo(id), cancel).await {
             Ok((raw, Response::FingerInfo { state, .. })) => {
