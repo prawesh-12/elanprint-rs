@@ -52,6 +52,8 @@ pub enum Command {
     EnrolledNum,
     /// `40 ff 12` plus a finger id, 70 byte slot record.
     FingerInfo(u8),
+    /// `40 ff 03`, wait for a touch and match it. Replies on `0x84`.
+    Verify,
     /// `40 ff 02`, end the current session. Sent before releasing after an error.
     Abort,
 }
@@ -64,6 +66,7 @@ impl Command {
             Self::SensorSize => vec![0x00, 0x0c],
             Self::EnrolledNum => vec![0x40, 0xff, 0x04],
             Self::FingerInfo(id) => vec![0x40, 0xff, 0x12, *id],
+            Self::Verify => vec![0x40, 0xff, 0x03],
             Self::Abort => vec![0x40, 0xff, 0x02],
         }
     }
@@ -71,7 +74,7 @@ impl Command {
     /// Bytes to read back. There is no length field on the wire.
     pub fn expected_len(&self) -> usize {
         match self {
-            Self::FwVersion | Self::EnrolledNum | Self::Abort => 2,
+            Self::FwVersion | Self::EnrolledNum | Self::Verify | Self::Abort => 2,
             Self::SensorSize => 4,
             Self::FingerInfo(_) => 70,
         }
@@ -85,6 +88,7 @@ impl Command {
             | Self::EnrolledNum
             | Self::FingerInfo(_)
             | Self::Abort => ReplyEndpoint::Status,
+            Self::Verify => ReplyEndpoint::TouchWait,
         }
     }
 
@@ -98,6 +102,7 @@ impl Command {
                 Duration::from_secs(1)
             }
             Self::FingerInfo(_) => Duration::from_secs(2),
+            Self::Verify => Duration::from_secs(20),
         }
     }
 
@@ -108,6 +113,7 @@ impl Command {
             Self::SensorSize => "sensor_size",
             Self::EnrolledNum => "enrolled_num",
             Self::FingerInfo(_) => "finger_info",
+            Self::Verify => "verify",
             Self::Abort => "abort",
         }
     }
@@ -152,6 +158,14 @@ pub enum Response {
         /// Byte 1.
         count: u8,
     },
+    /// Result of a touch-wait match.
+    Verify {
+        /// Byte 0, as received.
+        byte0: u8,
+        /// Byte 1 classified. `Ok(id)` is a match on that finger id,
+        /// `NotEnrolled` is `0xfd`, which is a normal answer, not a failure.
+        status: Status,
+    },
     /// Session ended. Byte 1 is the status.
     Abort {
         /// Byte 1.
@@ -190,6 +204,13 @@ impl Response {
             Command::EnrolledNum => {
                 let b = exact(cmd, raw, 2)?;
                 Ok(Self::EnrolledNum { count: b[1] })
+            }
+            Command::Verify => {
+                let b = exact(cmd, raw, 2)?;
+                Ok(Self::Verify {
+                    byte0: b[0],
+                    status: Status::classify(b[1]),
+                })
             }
             Command::Abort => {
                 let b = exact(cmd, raw, 2)?;
@@ -275,6 +296,46 @@ mod tests {
     #[test]
     fn abort_encodes_to_the_documented_bytes() {
         assert_eq!(Command::Abort.encode(), vec![0x40, 0xff, 0x02]);
+    }
+
+    #[test]
+    fn verify_encodes_to_the_documented_bytes() {
+        assert_eq!(Command::Verify.encode(), vec![0x40, 0xff, 0x03]);
+    }
+
+    #[test]
+    fn verify_replies_on_the_touch_wait_endpoint() {
+        assert_eq!(Command::Verify.reply_endpoint(), ReplyEndpoint::TouchWait);
+        assert_eq!(ReplyEndpoint::TouchWait.address(), 0x84);
+    }
+
+    #[test]
+    fn verify_waits_far_longer_than_a_status_command() {
+        assert!(Command::Verify.timeout() > Command::FwVersion.timeout());
+    }
+
+    #[test]
+    fn verify_fd_is_not_enrolled_not_an_ok_status() {
+        let got = Response::parse(&Command::Verify, &[0x40, 0xfd]);
+        assert_eq!(
+            got,
+            Ok(Response::Verify {
+                byte0: 0x40,
+                status: Status::NotEnrolled
+            })
+        );
+    }
+
+    #[test]
+    fn verify_low_byte_is_a_matched_finger_id() {
+        let got = Response::parse(&Command::Verify, &[0x40, 0x02]);
+        assert_eq!(
+            got,
+            Ok(Response::Verify {
+                byte0: 0x40,
+                status: Status::Ok(2)
+            })
+        );
     }
 
     #[test]

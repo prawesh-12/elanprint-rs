@@ -204,3 +204,69 @@ The parser was not changed to make 70 bytes appear. It reports what arrived.
 Ten `finger_info` commands in a row, then `fw_ver`, `sensor_size` and
 `enrolled_num` again: all three returned their earlier values. No desync, no
 stale response, and `abort` was never needed because nothing failed.
+
+## 2026-09-14 usbmon readable without root
+
+Appended to the same rules file:
+
+```
+SUBSYSTEM=="usbmon", GROUP="wireshark", MODE="0640"
+```
+
+`/dev/usbmon0..2` went from `0600 root:root` to `crw-r----- root wireshark`.
+`id -nG` already contained `wireshark`, so no re-login was needed. `dumpcap`
+captured 713 packets with 0 dropped as uid 1000.
+
+`tshark` is **not installed** on this machine (only `dumpcap`, `capinfos` and
+the Wireshark GUI), and installing it needs `apt`, which is outside the allowed
+sudo commands. `tools/usbmon_filter.py` reads the pcapng and decodes the Linux
+usbmon mmapped header (DLT 115, 64 byte header) instead. It takes a bus and
+device number and prints one line per URB.
+
+## 2026-09-14 verify with no touch, captured
+
+First use of the `0x84` touch-wait path. `verify` was sent with a 120 second
+wait. **Nobody is known to have touched the sensor during the window**, so this
+run says nothing about what a touch produces. It is recorded for what it does
+show.
+
+Capture, bus 1 device 2, times relative to the first packet:
+
+```
+  5.624  S  bulk OUT 0x01  -115    3  40 ff 03
+  5.625  C  bulk OUT 0x01     0    3
+  5.625  S  bulk IN  0x84  -115   64
+125.626  C  bulk IN  0x84    -2    0
+125.626  S  bulk OUT 0x01  -115    3  40 ff 02
+125.626  C  bulk OUT 0x01     0    3
+125.627  S  bulk IN  0x83  -115   64
+126.628  C  bulk IN  0x83    -2    0
+```
+
+What this establishes:
+
+- `40 ff 03` was accepted on `0x01`, completion status 0, 3 bytes written. The
+  command reached the chip.
+- The IN URB on `0x84` was submitted 1 ms later and stayed pending for the full
+  120 seconds. Completion status `-2` is `ENOENT`, the URB being unlinked by our
+  own timeout, not a device error. The chip sent nothing.
+- Cancellation works on the wire: the timeout cancelled a pending URB cleanly.
+- `abort` (`40 ff 02`) was also accepted on `0x01` with status 0.
+
+What this does **not** establish: nothing about `0xfd`, nothing about whether a
+touch produces a reply on `0x84`, and nothing about Q-002. A touch-wait command
+that is never touched is expected to return nothing. Q-002 stays open.
+
+### `abort` produced no reply within 1 second
+
+`docs/protocol.md` gives `abort` `in_len` 2 on `0x83`. The IN URB on `0x83` was
+still pending when our 1 second timeout unlinked it. Three explanations fit and
+this run cannot separate them: `abort` returns nothing on 0c90, the chip was
+still inside the unfinished `verify` session, or 1 second is too short. Not
+concluded. `abort` stays at `documented`.
+
+### No desync
+
+After the abandoned `verify` and the unanswered `abort`, `fw_ver`,
+`sensor_size` and `enrolled_num` all returned their earlier values:
+`01 08`, `4f 00 4f 00`, `40 00`. The session did not wedge.

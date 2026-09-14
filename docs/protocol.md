@@ -65,7 +65,7 @@ Not used by this driver. It may be how the Windows WBF stack binds. Reading the 
 | `sensor_size`              | `00 0c`                   | 2       | 4       | `0x83` | no                     | **confirmed** |
 | `enrolled_num`             | `40 ff 04`                | 3       | 2       | `0x83` | no                     | **confirmed** |
 | `enrolled_num1`            | `40 ff 00`                | 3       | 2       | `0x83` | no                     | documented |
-| `finger_info`              | `40 ff 12`                | 4       | 70      | `0x83` | no                     | **confirmed** |
+| `finger_info`              | `40 ff 12`                | 4       | 2 or 70 | `0x83` | no                     | **confirmed** |
 | `verify`                   | `40 ff 03`                | 3       | 2       | `0x84` | no                     | documented |
 | `abort`                    | `40 ff 02`                | 3       | 2       | `0x83` | no                     | documented |
 | `enroll`                   | `40 ff 01`                | 7       | 2       | `0x84` | writes flash           | documented |
@@ -110,8 +110,10 @@ Present in the source's command table but never called by it. Purpose and respon
 Payload is a single byte finger id. Response is 70 bytes.
 
 **Observed on 0c90, 2026-09-14:** ids 0 to 9 all returned **2 bytes, `40 ff`**,
-never 70, with `enrolled_num` at 0. Read the two byte form before assuming a 70
-byte one. See Q-002 for what `40 ff` means here, which is not yet settled.
+never 70, with `enrolled_num` at 0. 0c90 answers 2 bytes for an empty slot, so
+the reader must accept the short form and not treat it as a failed read. A 70
+byte record is still expected for an occupied slot, which is unverified until
+something is enrolled.
 
  If byte 1 comes back `0xff`, the sensor is in a stuck state and the source works around it by running a `verify` to clear it. If the response is only 2 bytes long, treat byte 1 as an error code. The last byte being `0xff` means that slot is not enrolled.
 

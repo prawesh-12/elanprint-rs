@@ -9,3 +9,7 @@
 # A bare trigger re-events every device on the machine, and uaccess applies
 # most reliably on add.
 SUBSYSTEM=="usb", ATTRS{idVendor}=="04f3", ATTRS{idProduct}=="0c90", MODE="0660", TAG+="uaccess"
+
+# usbmon nodes for capture, group readable so dumpcap works without root.
+# Not the sensor: this is the kernel's USB tracing interface.
+SUBSYSTEM=="usbmon", GROUP="wireshark", MODE="0640"

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use elanmoc_proto::{Command as Cmd, ReplyEndpoint, Response, SlotState};
+use elanmoc_proto::{Command as Cmd, ReplyEndpoint, Response, SlotState, Status};
 use elanmoc_usb::{Device, EndpointIn, UsbError};
 use tokio_util::sync::CancellationToken;
 
@@ -29,6 +29,14 @@ enum Action {
     FingerInfo {
         /// Finger id.
         id: u8,
+    },
+    /// Wait for a touch and ask the chip whether it matches an enrolled finger.
+    ///
+    /// Read only. With nothing enrolled, `0xfd` is the expected answer.
+    Verify {
+        /// Seconds to wait for a touch, overriding the protocol default.
+        #[arg(long)]
+        wait: Option<u64>,
     },
     /// Read every slot record from 0 to `upto`.
     Slots {
@@ -57,6 +65,9 @@ async fn main() -> Result<()> {
         Action::Info => session(&cancel, |d, c| Box::pin(info(d, c))).await,
         Action::FingerInfo { id } => {
             session(&cancel, move |d, c| Box::pin(finger_info(d, c, id))).await
+        }
+        Action::Verify { wait } => {
+            session(&cancel, move |d, c| Box::pin(verify(d, c, wait))).await
         }
         Action::Slots { upto } => session(&cancel, move |d, c| Box::pin(slots(d, c, upto))).await,
     }
@@ -98,13 +109,23 @@ async fn send(
     cmd: Cmd,
     cancel: &CancellationToken,
 ) -> Result<(Vec<u8>, Response)> {
+    send_waiting(device, cmd, cmd.timeout(), cancel).await
+}
+
+/// Same, with the wait overridden. The bytes sent are identical either way.
+async fn send_waiting(
+    device: &Device,
+    cmd: Cmd,
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> Result<(Vec<u8>, Response)> {
     let out = cmd.encode();
     let raw = match device
         .cmd(
             &out,
             endpoint(cmd.reply_endpoint()),
             cmd.expected_len(),
-            cmd.timeout(),
+            timeout,
             cancel,
         )
         .await
@@ -162,6 +183,32 @@ async fn finger_info(device: &Device, cancel: &CancellationToken, id: u8) -> Res
     println!("in ({:>2}):       {}", raw.len(), elanmoc_usb::hex(&raw));
     if let Response::FingerInfo { state, .. } = parsed {
         println!("slot {id}:        {}", describe(&state));
+    }
+    Ok(())
+}
+
+async fn verify(device: &Device, cancel: &CancellationToken, wait: Option<u64>) -> Result<()> {
+    let cmd = Cmd::Verify;
+    let timeout = wait.map_or_else(|| cmd.timeout(), Duration::from_secs);
+    println!("out:           {}  on 0x01", elanmoc_usb::hex(&cmd.encode()));
+    println!("waiting up to {timeout:?} for a touch, reply expected on 0x84 ...");
+
+    let started = Instant::now();
+    let (raw, parsed) = send_waiting(device, cmd, timeout, cancel).await?;
+    let elapsed = started.elapsed();
+
+    println!("in:            {}  after {elapsed:.2?}", elanmoc_usb::hex(&raw));
+    if let Response::Verify { byte0, status } = parsed {
+        println!("byte 0:        0x{byte0:02x}");
+        match status {
+            Status::NotEnrolled => {
+                println!("status:        0xfd, finger not enrolled. Expected with 0 enrolled.");
+            }
+            Status::Ok(id) => println!("status:        match on finger id {id}"),
+            Status::Retry(r) => println!("status:        retry, {r:?}"),
+            Status::MaxEnrolled => println!("status:        0xdd, maximum enrolled reached"),
+            Status::Unknown(b) => println!("status:        undocumented 0x{b:02x}, logged not assumed"),
+        }
     }
     Ok(())
 }
