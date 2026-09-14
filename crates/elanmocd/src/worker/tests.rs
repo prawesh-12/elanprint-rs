@@ -692,3 +692,133 @@ async fn an_early_return_still_releases_the_busy_flag() {
     assert!(state.try_begin().is_ok(), "the next op can start");
     let _ = std::fs::remove_file(&path);
 }
+
+/// A named verify must not accept a different finger.
+///
+/// `verify` is `40 ff 03` with no finger id: the chip matches against every
+/// template and returns whichever hit. Asking for one finger and being told
+/// "match" because a different one hit is a false accept for any caller that
+/// names a finger.
+#[tokio::test]
+async fn a_named_verify_refuses_a_different_finger() {
+    let path = store_path("wrong-finger");
+    write_store(
+        &path,
+        &[("u", "left-index-finger", 0), ("u", "right-index-finger", 1)],
+    );
+    let fake = Fake::new(vec![vec![0x40, 0x00]]); // the chip matched slot 0
+    let mut w = claimed(fake, path.clone());
+    let op = begin(&w);
+    let (tx, mut rx) = mpsc::channel(32);
+    if let Err(e) = w
+        .verify(
+            &op,
+            "right-index-finger".to_string(), // but slot 1 was asked for
+            OpSink::new(OpKind::Verify, tx),
+            CancellationToken::new(),
+        )
+        .await
+    {
+        panic!("the verify ran: {e}");
+    }
+
+    let events = drain(&mut rx).await;
+    assert_eq!(
+        events.last(),
+        Some(&OpEvent::VerifyStatus {
+            result: "verify-no-match".to_string(),
+            done: true,
+        }),
+        "a different finger is not a match: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OpEvent::VerifyFingerSelected { .. })),
+        "no finger is selected when none of the asked-for ones matched"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The finger that was asked for still matches normally.
+#[tokio::test]
+async fn a_named_verify_accepts_its_own_finger() {
+    let path = store_path("right-finger");
+    write_store(
+        &path,
+        &[("u", "left-index-finger", 0), ("u", "right-index-finger", 1)],
+    );
+    let fake = Fake::new(vec![vec![0x40, 0x01]]); // the chip matched slot 1
+    let mut w = claimed(fake, path.clone());
+    let op = begin(&w);
+    let (tx, mut rx) = mpsc::channel(32);
+    if let Err(e) = w
+        .verify(
+            &op,
+            "right-index-finger".to_string(),
+            OpSink::new(OpKind::Verify, tx),
+            CancellationToken::new(),
+        )
+        .await
+    {
+        panic!("the verify ran: {e}");
+    }
+
+    let events = drain(&mut rx).await;
+    assert!(
+        events.contains(&OpEvent::VerifyFingerSelected {
+            finger: "right-index-finger".to_string(),
+        }),
+        "the matched finger is named: {events:?}"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&OpEvent::VerifyStatus {
+            result: "verify-match".to_string(),
+            done: true,
+        })
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// "any" is what PAM sends, and it accepts whichever enrolled finger hits.
+#[tokio::test]
+async fn any_accepts_whichever_finger_matched() {
+    let path = store_path("any-finger");
+    write_store(
+        &path,
+        &[("u", "left-index-finger", 0), ("u", "right-index-finger", 1)],
+    );
+    for (reply, expected) in [(0x00u8, "left-index-finger"), (0x01, "right-index-finger")] {
+        let fake = Fake::new(vec![vec![0x40, reply]]);
+        let mut w = claimed(fake, path.clone());
+        let op = begin(&w);
+        let (tx, mut rx) = mpsc::channel(32);
+        if let Err(e) = w
+            .verify(
+                &op,
+                "any".to_string(),
+                OpSink::new(OpKind::Verify, tx),
+                CancellationToken::new(),
+            )
+            .await
+        {
+            panic!("the verify ran: {e}");
+        }
+        let events = drain(&mut rx).await;
+        assert!(
+            events.contains(&OpEvent::VerifyFingerSelected {
+                finger: expected.to_string(),
+            }),
+            "slot {reply} is {expected}: {events:?}"
+        );
+        assert_eq!(
+            events.last(),
+            Some(&OpEvent::VerifyStatus {
+                result: "verify-match".to_string(),
+                done: true,
+            })
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}

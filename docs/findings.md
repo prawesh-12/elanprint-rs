@@ -1054,3 +1054,40 @@ because the client never got that far.
 Fixes are D-028, D-029 and D-030. `OpState` keeps `claimed` and `busy` as
 atomics outside the worker lock, `OpToken` clears busy on drop, and both
 client operations subscribe before they start.
+
+---
+
+## 2026-09-15 `verify` carries no finger id, and both slots are distinct
+
+Installed the daemon as a system service and verified through it, as root on
+the system bus, with captures. `40 ff 04` armed at `40 02` every run.
+
+| Touch       | Reply on `0x84` | Matched slot | Latency |
+| ----------- | --------------- | ------------ | ------- |
+| left index  | `40 00`         | 0            | 19.0 s  |
+| left index  | `40 00`         | 0            | 6.7 s   |
+| right index | `40 01`         | 1            | 5.6 s   |
+
+Slot 1 is real. It was written by the first multi-slot enrol this project has
+done, its capture was lost, and until now it was evidenced only by
+`enrolled_num` reading 2. It matches, and it matches as a different id from
+slot 0, so the two templates are distinct. No false accept.
+
+### The bug this turned up
+
+A run asking for `right-index-finger` answered `verify-match` after a left
+index touch. `verify` is `40 ff 03`: three bytes, no finger id. The chip
+matches against every template it holds and returns whichever one hit. The
+daemon used the finger name only to check the store, then reported the raw
+chip answer, so naming a finger and being told "match" proved nothing about
+which finger was presented.
+
+Harmless for PAM, which sends `any`. Wrong for anything that names a finger.
+`verify_inner` now remembers the slot the named finger maps to and reports
+`verify-no-match` when the chip returns a different id, emitting no
+`VerifyFingerSelected` in that case. `any` is unchanged and still accepts
+whichever enrolled finger hits.
+
+Recorded as a protocol fact, not a driver quirk: **`verify` on 0c90 is
+"match against everything", never "match against this finger".** Any caller
+wanting a specific finger has to compare the returned id itself.

@@ -467,7 +467,10 @@ impl<T: Transport> Worker<T> {
         if finger != "any" && !elanmoc_store::is_valid_finger(finger) {
             return Err(WorkerError::BadFinger(finger.to_string()));
         }
-        {
+        // `verify` (40 ff 03) carries no finger id: the chip matches against
+        // every template and returns whichever hit. So a request for one
+        // named finger has to be checked against the id that comes back.
+        let wanted_slot = {
             let store = Store::open(&self.store_path)?;
             let has = store
                 .prints()
@@ -477,16 +480,15 @@ impl<T: Transport> Worker<T> {
             if !has {
                 return Err(WorkerError::NoPrints(user));
             }
-            if finger != "any"
-                && store
-                    .prints()
-                    .get(&user)
-                    .and_then(|f| f.get(finger))
-                    .is_none()
-            {
-                return Err(WorkerError::NotEnrolled(finger.to_string()));
+            if finger == "any" {
+                None
+            } else {
+                match store.prints().get(&user).and_then(|f| f.get(finger)) {
+                    Some(slot) => Some(*slot),
+                    None => return Err(WorkerError::NotEnrolled(finger.to_string())),
+                }
             }
-        }
+        };
         loop {
             let raw = self
                 .round(
@@ -505,18 +507,25 @@ impl<T: Transport> Worker<T> {
                 .await;
                 return Ok(());
             };
-            if let Ok(elanmoc_proto::VerifyOutcome::Match(id)) =
-                elanmoc_proto::VerifyOutcome::classify(status)
-            {
-                let name = self.finger_for_slot(&user, id);
-                sink.emit(OpEvent::VerifyFingerSelected { finger: name })
-                    .await;
-            }
             let done = !matches!(
                 elanmoc_proto::VerifyOutcome::classify(status),
                 Ok(elanmoc_proto::VerifyOutcome::Retry(_))
             );
-            let result = dbus::verify_status(status).unwrap_or(dbus::verify::UNKNOWN_ERROR);
+            let mut result = dbus::verify_status(status).unwrap_or(dbus::verify::UNKNOWN_ERROR);
+            if let Ok(elanmoc_proto::VerifyOutcome::Match(id)) =
+                elanmoc_proto::VerifyOutcome::classify(status)
+            {
+                if wanted_slot.is_some_and(|want| want != id) {
+                    tracing::warn!(
+                        "asked for {finger}, the chip matched slot {id}, reporting no match"
+                    );
+                    result = dbus::verify::NO_MATCH;
+                } else {
+                    let name = self.finger_for_slot(&user, id);
+                    sink.emit(OpEvent::VerifyFingerSelected { finger: name })
+                        .await;
+                }
+            }
             sink.emit(OpEvent::VerifyStatus {
                 result: result.to_string(),
                 done,
