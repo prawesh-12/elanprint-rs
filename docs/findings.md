@@ -472,3 +472,144 @@ confirmations stand as taken.
 byte 0 reading that is status 0 with count 0, and those two coincide at zero, so
 this reply cannot yet separate the two fields. Anything other than `40 00` would
 have distinguished them. It did not appear.
+
+---
+
+# The arming rule: touch-wait commands need `enrolled_num` first
+
+**Date:** 2026-09-14. **Device:** ELAN 04f3:0c90, firmware 1.8, 80 x 80 sensor.
+**Status:** observed four times, three negative and one positive, with a usbmon
+capture for each.
+
+This is the project's first novel result. It is written out in full because it
+is not in `depau/elanpoc`, not in `docs/protocol.md`, and not in any published
+description of this chip family that we are aware of.
+
+## The rule
+
+On 0c90, a command that waits for a finger does not answer unless
+`enrolled_num` (`40 ff 04`) has been sent first **on the same claimed
+interface**. Without it the chip accepts the command, acknowledges the OUT
+transfer, and then sends nothing at all, indefinitely, on any endpoint.
+
+With the arming read, the same command on the same endpoint answers normally at
+touch latency.
+
+## Evidence
+
+### Three negative runs
+
+`verify` (`40 ff 03`) sent immediately after open and claim, with no other
+command in between.
+
+| Run | Wait | Reads posted | Touch | Result |
+| --- | ---- | ------------ | ----- | ------ |
+| 1 | 120 s | `0x84` | not confirmed | nothing |
+| 2 | 120 s | `0x84` | intended, unverifiable | nothing |
+| 3 | 180 s | `0x83` **and** `0x84` | **confirmed by the user** | nothing |
+
+In every case the OUT transfer on `0x01` completed with status 0, so the command
+reached the chip. Every IN URB stayed pending for the full timeout and ended at
+`-2` (`ENOENT`), which is the host unlinking its own request, not a device
+error. Zero bytes arrived.
+
+Run 3 matters most. Reads were posted on both documented IN endpoints in the
+same millisecond as the command, roughly four seconds before the touch, and the
+touch is confirmed. Capture:
+
+```
+  5.896  S  bulk OUT 0x01  -115    3  40 ff 03
+  5.896  S  bulk IN  0x83  -115   64
+  5.896  S  bulk IN  0x84  -115   64
+185.898  C  bulk IN  0x83    -2    0
+185.899  C  bulk IN  0x84    -2    0
+```
+
+### The positive run
+
+Identical bytes, identical endpoints, one difference: `enrolled_num` first, in
+the same claim.
+
+```
+ 5.966  S  bulk OUT 0x01  -115    3  40 ff 04
+ 5.966  C  bulk IN  0x83     0    2  40 00
+ 5.967  S  bulk OUT 0x01  -115    3  40 ff 03
+ 5.967  S  bulk IN  0x83  -115   64
+ 5.967  S  bulk IN  0x84  -115   64
+26.838  C  bulk IN  0x84     0    2  40 fd
+26.838  C  bulk IN  0x03    -2    0
+```
+
+`40 fd` on `0x84`, 20.87 seconds after the command, which is how long the user
+took to touch. Byte 0 is the `0x40` echo, byte 1 is `0xfd`, "finger not
+enrolled", correct for a chip with `enrolled_num` at 0.
+
+## Why the endpoint theory was tested and rejected
+
+Before probe 1 the leading explanation was a wrong endpoint. `docs/protocol.md`
+translates the endpoint split from the source's raw libusb numbers for 0c4c,
+never confirmed on 0c90, and names a reply arriving on the wrong endpoint as a
+suspected cause of the known enroll bug.
+
+That theory could not be tested by capture alone. **usbmon records URBs, not
+bus-level NAKs**: if the chip answered on an endpoint with no read posted, the
+device would be NAKed and nothing would appear in the trace. Silence on `0x84`
+therefore did not rule out a reply elsewhere.
+
+Run 3 settled it by posting reads on `0x83` and `0x84` at once. Both stayed
+silent. Then the positive run showed the reply arriving on `0x84` while the
+`0x83` read posted beside it went unlinked at `-2`.
+
+**The documented endpoint mapping is correct.** `0x84` is the touch-wait
+endpoint on 0c90, exactly as the table says. The three IN endpoints must stay
+distinct.
+
+## The rule to implement
+
+From D-012:
+
+- Send `enrolled_num` (`40 ff 04`) once, at the start of a session, before any
+  touch-wait command.
+- Hold **one claim** for the whole sequence. Do not open, claim and release per
+  command.
+- This costs one 3 byte command and one 2 byte reply, well under a millisecond.
+
+## Why this may be the known enroll bug
+
+Untested, stated as a hypothesis and labelled as one.
+
+The reported symptom of the community bug is that enrol appears to finish, then
+errors, and the print is saved only if the user cancels. `docs/protocol.md`
+gives `enroll` the same touch-wait shape as `verify` on the same `0x84`.
+
+A host that opens a fresh session per step, or that skips the arming read, would
+see a touch-wait command that never answers, and would report its own timeout as
+a failure while the chip had in fact done the work. That matches the symptom.
+
+It is not claimed as the cause. Phase 3 will test it deliberately rather than
+letting the arming rule fix things as a side effect, so the evidence is clean
+enough to publish.
+
+## What the rule does not explain
+
+- Why the chip behaves this way. Nothing here shows a mechanism.
+- Whether commands other than `verify` need arming. Only `verify` was tested.
+  `enroll` is untested.
+- Whether some command other than `enrolled_num` would also arm it. Not probed,
+  and not worth probing by trial on a flash-capable MCU.
+- Whether the config queries need it. They do not: `fw_ver`, `sensor_size` and
+  `enrolled_num` return identical values armed or unarmed.
+
+---
+
+## 2026-09-14 Slot limit probe, ids 0 to 15
+
+`finger_info` for ids 0 through 15, primed, all in one claim. **All sixteen
+returned `40 ff`.**
+
+No id in that range answers differently, so the chip does not range-check the
+finger id in a way this probe can see, and **the slot limit stays unknown**.
+No writes were made and nothing was enrolled.
+
+The only route to the limit that `docs/protocol.md` offers is enrolling until
+`0xdd`, which fills the chip. Not done, on the user's instruction.

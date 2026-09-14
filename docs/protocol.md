@@ -121,6 +121,15 @@ something is enrolled.
 
 Waits for a touch, so use a long timeout and read on `0x84`. Byte 1 is the matched finger id on success. `0xfd` means the finger is not enrolled, which is a **normal expected value**, not a failure, during the pre-enroll check.
 
+**Observed on 0c90, 2026-09-14:** `40 fd` on `0x84` at touch latency, byte 0 is
+the `0x40` echo. The endpoint is as documented.
+
+**Precondition, not in the source:** `verify` only answers if `enrolled_num`
+(`40 ff 04`) was sent first on the same claimed interface. Without it the chip
+accepts the command and sends nothing, on any endpoint, indefinitely. Confirmed
+over three silent runs and one successful one, all captured. See
+"The arming rule" in `docs/findings.md`.
+
 ### `enroll`
 
 Payload is 4 bytes: `new_finger_id`, `total_attempts`, `attempts_done`, `0`. The source uses 8 total attempts. Called in a loop, once per touch. Byte 1 of the response is 0 on a good sample, otherwise an error code. `0xdd` means the slot limit is reached, and the loop must stop rather than retry.
