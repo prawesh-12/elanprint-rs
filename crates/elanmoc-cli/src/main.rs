@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use elanmoc_proto::{Command as Cmd, ReplyEndpoint, Response, SlotState, Status};
+use elanmoc_proto::{
+    Command as Cmd, Enroll, EnrollAction, ReplyEndpoint, Response, SlotState, Status,
+};
 use elanmoc_usb::{Device, EndpointIn, UsbError};
 use tokio_util::sync::CancellationToken;
 
@@ -69,6 +71,24 @@ enum Action {
         #[arg(long)]
         prime: bool,
     },
+    /// Print the planned enroll bytes for a slot. Sends nothing.
+    EnrollPlan {
+        /// On-chip slot to enroll into.
+        #[arg(long)]
+        slot: u8,
+    },
+    /// Enroll one finger. Writes flash. Needs a touch per sample.
+    Enroll {
+        /// fprintd finger name, for the host store.
+        #[arg(long)]
+        finger: String,
+        /// On-chip slot to enroll into. Picked from `slots --prime`.
+        #[arg(long)]
+        slot: u8,
+        /// Seconds per touch wait, overriding the protocol defaults.
+        #[arg(long)]
+        wait: Option<u64>,
+    },
 }
 
 #[tokio::main]
@@ -107,6 +127,16 @@ async fn main() -> Result<()> {
         }
         Action::Slots { upto, prime } => {
             session(&cancel, move |d, c| Box::pin(slots(d, c, upto, prime))).await
+        }
+        Action::EnrollPlan { slot } => {
+            enroll_plan(slot);
+            Ok(())
+        }
+        Action::Enroll { finger, slot, wait } => {
+            session(&cancel, move |d, c| {
+                Box::pin(enroll(d, c, finger, slot, wait))
+            })
+            .await
         }
     }
 }
@@ -374,6 +404,215 @@ fn describe(state: &SlotState) -> String {
         SlotState::Enrolled { raw } => {
             format!("enrolled, {}", elanmoc_usb::hex(raw))
         }
+    }
+}
+
+/// fprintd finger names. The store will own this list later.
+const FINGER_NAMES: [&str; 10] = [
+    "left-thumb",
+    "left-index-finger",
+    "left-middle-finger",
+    "left-ring-finger",
+    "left-little-finger",
+    "right-thumb",
+    "right-index-finger",
+    "right-middle-finger",
+    "right-ring-finger",
+    "right-little-finger",
+];
+
+/// Print the exact bytes an enroll of `slot` will send. No device I/O.
+fn enroll_plan(slot: u8) {
+    use elanmoc_proto::{TOTAL_ENROLL_ATTEMPTS, sub_id};
+    println!("plan for slot {slot}, one claim, armed once, never re-armed:");
+    println!("  arm:        {}", elanmoc_usb::hex(&Cmd::EnrolledNum.encode()));
+    println!("  pre-check:  {}", elanmoc_usb::hex(&Cmd::Verify.encode()));
+    for done in 0..TOTAL_ENROLL_ATTEMPTS {
+        let cmd = Cmd::Enroll {
+            finger_id: slot,
+            total_attempts: TOTAL_ENROLL_ATTEMPTS,
+            attempts_done: done,
+        };
+        println!("  sample {done}:  {}", elanmoc_usb::hex(&cmd.encode()));
+    }
+    println!("  collision:  {}", elanmoc_usb::hex(&Cmd::CheckCollision.encode()));
+    let commit = Cmd::commit(sub_id(slot));
+    println!("  commit:     {} bytes", commit.encode().len());
+    println!("  commit:     {}", elanmoc_usb::hex(&commit.encode()));
+    println!("  sub_id:     0x{:02x}", sub_id(slot));
+}
+
+/// Run the full enroll sequence in one claim. Writes flash.
+async fn enroll(
+    device: &Device,
+    cancel: &CancellationToken,
+    finger: String,
+    slot: u8,
+    wait: Option<u64>,
+) -> Result<()> {
+    use elanmoc_proto::{TOTAL_ENROLL_ATTEMPTS, sub_id};
+    if !FINGER_NAMES.contains(&finger.as_str()) {
+        bail!("unknown finger '{finger}', want one of: {}", FINGER_NAMES.join(", "));
+    }
+    let touch_wait = wait.map(Duration::from_secs);
+
+    let (_, parsed) = send(device, Cmd::EnrolledNum, cancel).await?;
+    let before = match parsed {
+        Response::EnrolledNum { count } => count,
+        other => bail!("enrolled_num gave unexpected {other:?}"),
+    };
+    println!("armed once. enrolled: {before}");
+
+    let (_, parsed) = send(device, Cmd::FingerInfo(slot), cancel).await?;
+    match parsed {
+        Response::FingerInfo {
+            state: SlotState::Enrolled { .. },
+            ..
+        } => bail!("slot {slot} already holds a 70 byte record, pick another"),
+        Response::FingerInfo { state, .. } => {
+            println!("slot {slot}: {} (2 byte form reads as free)", describe(&state));
+        }
+        other => bail!("finger_info gave unexpected {other:?}"),
+    }
+
+    println!("touch the {finger} now, pre-check, reply 0xfd means it is new ...");
+    let verify_wait = touch_wait.unwrap_or_else(|| Cmd::Verify.timeout());
+    loop {
+        let (_, parsed) = send_waiting(device, Cmd::Verify, verify_wait, cancel).await?;
+        match parsed {
+            Response::Verify { status: Status::NotEnrolled, .. } => {
+                println!("pre-check: 0xfd, finger is new");
+                break;
+            }
+            Response::Verify { status: Status::Retry(r), .. } => {
+                println!("pre-check retry ({r:?}), touch again ...");
+            }
+            Response::Verify { status: Status::Ok(id), .. } => {
+                bail!("finger already enrolled as id {id}, stopping");
+            }
+            Response::Verify { status, .. } => {
+                bail!("pre-check gave {status:?}, stopping, no enroll sent");
+            }
+            other => bail!("verify gave unexpected {other:?}"),
+        }
+    }
+
+    let mut sm = Enroll::new(slot);
+    let EnrollAction::Send(mut out) = sm.start() else {
+        bail!("enroll machine did not start with a send");
+    };
+    println!("samples: {TOTAL_ENROLL_ATTEMPTS} touches, no re-arm between them ...");
+    loop {
+        println!("touch now, attempt {} of {TOTAL_ENROLL_ATTEMPTS} ...", sm.collected());
+        let raw = machine_round(device, &out, touch_wait, cancel).await?;
+        match sm.step(&raw) {
+            EnrollAction::EmitProgress { done, total } => {
+                println!("sample {done} of {total} accepted");
+                let Some(EnrollAction::Send(next)) = sm.take_send() else {
+                    bail!("machine owes a send after progress");
+                };
+                out = next;
+            }
+            EnrollAction::EmitRetry(r) => {
+                println!("sample rejected ({r:?}), same attempt again ...");
+                let Some(EnrollAction::Send(next)) = sm.take_send() else {
+                    bail!("machine owes a resend after retry");
+                };
+                out = next;
+            }
+            EnrollAction::Send(next) => {
+                println!("collision check clear, sending commit ...");
+                let raw = machine_round(device, &next, None, cancel).await?;
+                drain_trailing(device, cancel).await;
+                match sm.step(&raw) {
+                    EnrollAction::Complete(id) => {
+                        println!("commit status 0, template id {id}");
+                        break;
+                    }
+                    EnrollAction::Fail(e) => bail!("commit failed: {e}"),
+                    other => bail!("unexpected {other:?} after commit"),
+                }
+            }
+            EnrollAction::Complete(id) => {
+                println!("complete, template id {id}");
+                break;
+            }
+            EnrollAction::Fail(e) => bail!("enroll failed: {e}"),
+        }
+    }
+
+    let (_, parsed) = send(device, Cmd::EnrolledNum, cancel).await?;
+    if let Response::EnrolledNum { count } = parsed {
+        println!("enrolled now: {count} (was {before})");
+    }
+    let (raw, parsed) = send(device, Cmd::FingerInfo(slot), cancel).await?;
+    if let Response::FingerInfo { state, .. } = parsed {
+        println!("slot {slot} now: {} bytes, {}", raw.len(), describe(&state));
+    }
+    println!("sub_id 0x{:02x}, finger {finger}, record this mapping in the store", sub_id(slot));
+    Ok(())
+}
+
+/// Send one machine-produced command and read its reply.
+async fn machine_round(
+    device: &Device,
+    out: &[u8],
+    touch_wait: Option<Duration>,
+    cancel: &CancellationToken,
+) -> Result<Vec<u8>> {
+    let (ep, in_len, timeout) = machine_io(out, touch_wait)?;
+    println!("out: {}", elanmoc_usb::hex(out));
+    device.send(out, Duration::from_secs(1), cancel).await?;
+    match device.recv(ep, in_len, timeout, cancel).await {
+        Ok(bytes) => {
+            println!("in:  {}", elanmoc_usb::hex(&bytes));
+            Ok(bytes)
+        }
+        Err(UsbError::ShortRead { data, .. }) => {
+            println!("in (short): {}", elanmoc_usb::hex(&data));
+            Ok(data)
+        }
+        Err(e) => bail!("touch wait failed ({e}), aborting, no re-arm, report and stop"),
+    }
+}
+
+/// Endpoint, reply length and timeout for bytes the machine produced.
+fn machine_io(out: &[u8], touch_wait: Option<Duration>) -> Result<(EndpointIn, usize, Duration)> {
+    if out.len() == 7 && out.starts_with(&[0x40, 0xff, 0x01]) {
+        let wait = touch_wait.unwrap_or_else(|| {
+            Cmd::Enroll {
+                finger_id: 0,
+                total_attempts: 8,
+                attempts_done: 0,
+            }
+            .timeout()
+        });
+        return Ok((EndpointIn::TouchWait, 2, wait));
+    }
+    if out == [0x40, 0xff, 0x10] {
+        return Ok((EndpointIn::Status, 3, Cmd::CheckCollision.timeout()));
+    }
+    if out.len() == 72 && out.starts_with(&[0x40, 0xff, 0x11]) {
+        return Ok((EndpointIn::Status, 2, Cmd::commit(0).timeout()));
+    }
+    bail!("machine produced bytes outside protocol.md")
+}
+
+/// Read past the commit reply in case the chip sends trailing packets.
+async fn drain_trailing(device: &Device, cancel: &CancellationToken) {
+    match device
+        .recv(EndpointIn::Status, 64, Duration::from_millis(500), cancel)
+        .await
+    {
+        Ok(extra) if !extra.is_empty() => {
+            println!("trailing: {} bytes: {}", extra.len(), elanmoc_usb::hex(&extra));
+        }
+        Ok(_) => println!("trailing: none"),
+        Err(UsbError::Timeout(_)) => println!("trailing: none in 500ms"),
+        Err(UsbError::ShortRead { data, .. }) if !data.is_empty() => {
+            println!("trailing: {} bytes: {}", data.len(), elanmoc_usb::hex(&data));
+        }
+        Err(e) => println!("trailing: unreadable ({e})"),
     }
 }
 
