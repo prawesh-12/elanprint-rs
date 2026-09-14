@@ -270,3 +270,36 @@ concluded. `abort` stays at `documented`.
 After the abandoned `verify` and the unanswered `abort`, `fw_ver`,
 `sensor_size` and `enrolled_num` all returned their earlier values:
 `01 08`, `4f 00 4f 00`, `40 00`. The session did not wedge.
+
+## 2026-09-14 `abort` returns nothing on 0c90
+
+Sent from an idle session with nothing pending and a 5 second wait, captured:
+
+```
+2.006  S  bulk OUT 0x01  -115    3  40 ff 02
+2.006  C  bulk OUT 0x01     0    3
+2.007  S  bulk IN  0x03  -115   64
+7.008  C  bulk IN  0x03    -2    0
+```
+
+`40 ff 02` was accepted on `0x01`, completion status 0. The IN URB on `0x83`
+stayed pending the full 5 seconds and ended at `-2`, our own unlink. The chip
+sent nothing.
+
+**Difference from the documented source.** `docs/protocol.md` gives `abort`
+`in_len` 2 on `0x83`. 0c90 replies with **0 bytes**. The `in_len` column is
+left at 2 on the user's instruction; this entry is the record.
+
+This settles the ambiguity from the earlier `verify` run. The silence there was
+not the unfinished `verify` session holding the chip: `abort` is silent from
+idle too.
+
+Consequence, and it matters: any error path that waits for `abort`'s reply
+burns its whole timeout and then reports a failure that did not happen. Before
+this change, every failed command cost an extra second and printed
+"abort failed: transfer timed out". `Command::Abort::expected_len()` is now 0,
+so `abort` is send-only and returns in about 360 microseconds. `Response::Abort`
+carries `Option<Status>` so a reply is still parsed if some other firmware
+sends one.
+
+`fw_ver` and `enrolled_num` unchanged afterwards.

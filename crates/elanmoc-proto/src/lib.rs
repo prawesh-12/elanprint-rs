@@ -55,6 +55,9 @@ pub enum Command {
     /// `40 ff 03`, wait for a touch and match it. Replies on `0x84`.
     Verify,
     /// `40 ff 02`, end the current session. Sent before releasing after an error.
+    ///
+    /// `docs/protocol.md` gives `in_len` 2. 0c90 sends nothing, confirmed from
+    /// idle with a 5 second wait, so nothing is read back. See `findings.md`.
     Abort,
 }
 
@@ -74,7 +77,8 @@ impl Command {
     /// Bytes to read back. There is no length field on the wire.
     pub fn expected_len(&self) -> usize {
         match self {
-            Self::FwVersion | Self::EnrolledNum | Self::Verify | Self::Abort => 2,
+            Self::FwVersion | Self::EnrolledNum | Self::Verify => 2,
+            Self::Abort => 0,
             Self::SensorSize => 4,
             Self::FingerInfo(_) => 70,
         }
@@ -166,10 +170,10 @@ pub enum Response {
         /// `NotEnrolled` is `0xfd`, which is a normal answer, not a failure.
         status: Status,
     },
-    /// Session ended. Byte 1 is the status.
+    /// Session ended.
     Abort {
-        /// Byte 1.
-        status: Status,
+        /// Byte 1, when there is one. 0c90 replies with nothing.
+        status: Option<Status>,
     },
     /// One slot record.
     FingerInfo {
@@ -212,12 +216,17 @@ impl Response {
                     status: Status::classify(b[1]),
                 })
             }
-            Command::Abort => {
-                let b = exact(cmd, raw, 2)?;
-                Ok(Self::Abort {
-                    status: Status::classify(b[1]),
-                })
-            }
+            Command::Abort => match raw.len() {
+                0 => Ok(Self::Abort { status: None }),
+                2 => Ok(Self::Abort {
+                    status: Some(Status::classify(raw[1])),
+                }),
+                got => Err(ProtoError::UnexpectedLength {
+                    command: cmd.name(),
+                    wanted: 0,
+                    got,
+                }),
+            },
             Command::FingerInfo(id) => Ok(Self::FingerInfo {
                 id: *id,
                 state: parse_slot(cmd, raw)?,
@@ -296,6 +305,25 @@ mod tests {
     #[test]
     fn abort_encodes_to_the_documented_bytes() {
         assert_eq!(Command::Abort.encode(), vec![0x40, 0xff, 0x02]);
+    }
+
+    #[test]
+    fn abort_expects_no_reply_on_0c90() {
+        assert_eq!(Command::Abort.expected_len(), 0);
+        assert_eq!(
+            Response::parse(&Command::Abort, &[]),
+            Ok(Response::Abort { status: None })
+        );
+    }
+
+    #[test]
+    fn abort_still_parses_a_reply_if_one_ever_arrives() {
+        assert_eq!(
+            Response::parse(&Command::Abort, &[0x40, 0x00]),
+            Ok(Response::Abort {
+                status: Some(Status::Ok(0))
+            })
+        );
     }
 
     #[test]

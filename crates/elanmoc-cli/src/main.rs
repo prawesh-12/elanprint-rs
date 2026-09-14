@@ -38,6 +38,14 @@ enum Action {
         #[arg(long)]
         wait: Option<u64>,
     },
+    /// Send `abort` on its own, from an idle session.
+    ///
+    /// Read only. Tests whether the chip answers `abort` when nothing is pending.
+    Abort {
+        /// Seconds to wait for the reply, overriding the protocol default.
+        #[arg(long)]
+        wait: Option<u64>,
+    },
     /// Read every slot record from 0 to `upto`.
     Slots {
         /// Highest id to read.
@@ -69,6 +77,9 @@ async fn main() -> Result<()> {
         Action::Verify { wait } => {
             session(&cancel, move |d, c| Box::pin(verify(d, c, wait))).await
         }
+        Action::Abort { wait } => {
+            session(&cancel, move |d, c| Box::pin(abort_alone(d, c, wait))).await
+        }
         Action::Slots { upto } => session(&cancel, move |d, c| Box::pin(slots(d, c, upto))).await,
     }
 }
@@ -96,7 +107,7 @@ where
 
     if result.is_err() {
         match send(&device, Cmd::Abort, cancel).await {
-            Ok((raw, _)) => println!("abort:         {}", elanmoc_usb::hex(&raw)),
+            Ok(_) => println!("abort sent (0c90 sends no reply)"),
             Err(e) => println!("abort failed:  {e}"),
         }
     }
@@ -211,6 +222,39 @@ async fn verify(device: &Device, cancel: &CancellationToken, wait: Option<u64>) 
         }
     }
     Ok(())
+}
+
+async fn abort_alone(
+    device: &Device,
+    cancel: &CancellationToken,
+    wait: Option<u64>,
+) -> Result<()> {
+    let cmd = Cmd::Abort;
+    let timeout = wait.map_or_else(|| cmd.timeout(), Duration::from_secs);
+    println!("out:           {}  on 0x01", elanmoc_usb::hex(&cmd.encode()));
+    println!("waiting up to {timeout:?} on 0x83, nothing else pending ...");
+
+    let started = Instant::now();
+    let result = send_waiting(device, cmd, timeout, cancel).await;
+    let elapsed = started.elapsed();
+
+    match result {
+        Ok((raw, parsed)) => {
+            println!("in:            {}  after {elapsed:.2?}", elanmoc_usb::hex(&raw));
+            if let Response::Abort { status } = parsed {
+                match status {
+                    Some(s) => println!("status:        {s:?}"),
+                    None => println!("status:        no reply, as expected on 0c90"),
+                }
+            }
+            Ok(())
+        }
+        Err(e) => {
+            println!("no reply after {elapsed:.2?}: {e}");
+            println!("abort returned nothing from idle.");
+            Ok(())
+        }
+    }
 }
 
 async fn slots(device: &Device, cancel: &CancellationToken, upto: u8) -> Result<()> {
