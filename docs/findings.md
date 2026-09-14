@@ -885,3 +885,49 @@ was streaming, so 150 seconds cost 491 MB on a disk at 99%. Raw pcapng files
 are decoded to `captures/decoded/*.txt` and then deleted; the decode is the
 record. New captures use `dumpcap -s 160`, which keeps the 64 byte usbmon
 header plus the longest payload in the table (the 72 byte `commit`).
+
+---
+
+## 2026-09-14 The collision check was read on 0x84. This is the enroll bug.
+
+First app enrol attempt after the fixes. Slot 0, left index finger, capture
+running, eight confirmed touches. On the wire:
+
+```
+40 ff 04  ->  40 00          arm, count 0
+40 ff 04  ->  40 00          free_slot reads the count
+40 ff 12 00  ->  40 ff       slot 0, the 2 byte form
+40 ff 01 00 08 00 00  ->  40 00    sample 1
+...                                samples 2 to 5
+40 ff 01 00 08 05 00  ->  40 43    MoveUp, counter held, resent
+...                                samples 6 to 8
+40 ff 10  ->  (nothing)
+```
+
+After `40 ff 10` the daemon submitted its read on **ep 84**. The collision
+check answers on `0x83` with 3 bytes. The read waited the full 30 second
+sample timeout, the enrol failed, `abort` went out and `commit` was never
+sent. `enrolled_num` after: `40 00`. No flash write. Nothing was lost.
+
+Cause, in the loop rather than in the protocol: the read after every send
+was hardcoded to `EndpointIn::TouchWait`, 2 bytes. After the eighth sample
+`Enroll::step` returns `EmitProgress` and queues the collision check through
+`take_send`, so the loop's own `Send` arm, which did check for the `40 ff 10`
+prefix, was never reached. The CLI sniffed the outgoing bytes in `machine_io`
+and got it right, which is why GATE 3a committed and the daemon never could.
+
+### This corrects the slot 1 entry above
+
+The 2026-09-14 slot 1 attempt recorded "`40 ff 10` went out and nothing came
+back in 2 s" and listed a marginal collision timeout as the leading candidate.
+That was wrong. The reply was never going to arrive: the read was posted on
+the wrong endpoint. Raising the timeout from 2 s to 5 s, recorded as D-022,
+changed nothing that mattered. The device was right both times.
+
+### Fix
+
+`Enroll::pending_read()` returns the endpoint, length and timeout of the
+command the machine just queued. Both the daemon and the CLI now read where
+the machine says. Neither infers an endpoint from bytes any more, and
+`machine_io` is deleted. Covered by `an_enrol_reads_every_reply_on_the_right_endpoint`,
+which fails with "wrong endpoint for [40, ff, 10]" against the old loop.

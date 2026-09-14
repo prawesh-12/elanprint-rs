@@ -516,8 +516,25 @@ async fn enroll(
     };
     println!("samples: {TOTAL_ENROLL_ATTEMPTS} touches, no re-arm between them ...");
     loop {
-        println!("touch now, attempt {} of {TOTAL_ENROLL_ATTEMPTS} ...", sm.collected());
-        let raw = machine_round(device, &out, touch_wait, cancel).await?;
+        let Some((ep, in_len, timeout)) = sm.pending_read() else {
+            bail!("enroll machine queued bytes with no pending read");
+        };
+        let is_commit = out.len() == 72 && out.starts_with(&[0x40, 0xff, 0x11]);
+        if is_commit && hold_before_commit {
+            println!("collision check clear, commit bytes: {}", elanmoc_usb::hex(&out));
+            wait_for_go(cancel).await?;
+        }
+        if ep == ReplyEndpoint::TouchWait {
+            println!("touch now, attempt {} of {TOTAL_ENROLL_ATTEMPTS} ...", sm.collected());
+        }
+        let wait = match (ep, touch_wait) {
+            (ReplyEndpoint::TouchWait, Some(w)) => w,
+            _ => timeout,
+        };
+        let raw = machine_round(device, &out, endpoint(ep), in_len, wait, cancel).await?;
+        if is_commit {
+            drain_trailing(device, cancel).await;
+        }
         match sm.step(&raw) {
             EnrollAction::EmitProgress { done, total } => {
                 println!("sample {done} of {total} accepted");
@@ -533,23 +550,7 @@ async fn enroll(
                 };
                 out = next;
             }
-            EnrollAction::Send(next) => {
-                println!("collision check clear, commit bytes: {}", elanmoc_usb::hex(&next));
-                if hold_before_commit {
-                    wait_for_go(cancel).await?;
-                }
-                println!("sending commit ...");
-                let raw = machine_round(device, &next, None, cancel).await?;
-                drain_trailing(device, cancel).await;
-                match sm.step(&raw) {
-                    EnrollAction::Complete(id) => {
-                        println!("commit status 0, template id {id}");
-                        break;
-                    }
-                    EnrollAction::Fail(e) => bail!("commit failed: {e}"),
-                    other => bail!("unexpected {other:?} after commit"),
-                }
-            }
+            EnrollAction::Send(next) => out = next,
             EnrollAction::Complete(id) => {
                 println!("complete, template id {id}");
                 break;
@@ -571,14 +572,18 @@ async fn enroll(
 }
 
 /// Send one machine-produced command and read its reply.
+///
+/// The endpoint and length come from the state machine, never from the
+/// outgoing bytes: the machine is what knows which command it queued.
 async fn machine_round(
     device: &Device,
     out: &[u8],
-    touch_wait: Option<Duration>,
+    ep: EndpointIn,
+    in_len: usize,
+    timeout: Duration,
     cancel: &CancellationToken,
 ) -> Result<Vec<u8>> {
-    let (ep, in_len, timeout) = machine_io(out, touch_wait)?;
-    println!("out: {}", elanmoc_usb::hex(out));
+    println!("out: {}  reply on 0x{:02x}", elanmoc_usb::hex(out), ep.address());
     device.send(out, Duration::from_secs(1), cancel).await?;
     match device.recv(ep, in_len, timeout, cancel).await {
         Ok(bytes) => {
@@ -589,30 +594,8 @@ async fn machine_round(
             println!("in (short): {}", elanmoc_usb::hex(&data));
             Ok(data)
         }
-        Err(e) => bail!("touch wait failed ({e}), aborting, no re-arm, report and stop"),
+        Err(e) => bail!("read failed ({e}), aborting, no re-arm, report and stop"),
     }
-}
-
-/// Endpoint, reply length and timeout for bytes the machine produced.
-fn machine_io(out: &[u8], touch_wait: Option<Duration>) -> Result<(EndpointIn, usize, Duration)> {
-    if out.len() == 7 && out.starts_with(&[0x40, 0xff, 0x01]) {
-        let wait = touch_wait.unwrap_or_else(|| {
-            Cmd::Enroll {
-                finger_id: 0,
-                total_attempts: 8,
-                attempts_done: 0,
-            }
-            .timeout()
-        });
-        return Ok((EndpointIn::TouchWait, 2, wait));
-    }
-    if out == [0x40, 0xff, 0x10] {
-        return Ok((EndpointIn::Status, 3, Cmd::CheckCollision.timeout()));
-    }
-    if out.len() == 72 && out.starts_with(&[0x40, 0xff, 0x11]) {
-        return Ok((EndpointIn::Status, 2, Cmd::commit(0).timeout()));
-    }
-    bail!("machine produced bytes outside protocol.md")
 }
 
 /// Hold the armed claim until /tmp/elanmoc-commit-go appears.

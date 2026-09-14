@@ -103,6 +103,16 @@ impl Enroll {
         self.pending_command().map(|c| c.timeout())
     }
 
+    /// Endpoint, reply length and timeout for the queued command.
+    ///
+    /// The machine knows which command it just queued, so the caller never
+    /// has to guess from the outgoing bytes. Reading a sample's endpoint for
+    /// the collision check costs a full touch timeout and no commit.
+    pub fn pending_read(&self) -> Option<(crate::ReplyEndpoint, usize, Duration)> {
+        self.pending_command()
+            .map(|c| (c.reply_endpoint(), c.expected_len(), c.timeout()))
+    }
+
     fn pending_command(&self) -> Option<Command> {
         match self.pending {
             Some(Pending::Sample) => Some(Command::Enroll {
@@ -282,6 +292,59 @@ fn retry_code(r: Retry) -> u8 {
         Retry::MoveLeft => 0x44,
         Retry::Dirty => 0xfb,
         Retry::AreaTooSmall => 0xfe,
+    }
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::*;
+    use crate::ReplyEndpoint;
+
+    /// The machine names the endpoint, so the caller never guesses.
+    #[test]
+    fn the_collision_check_is_read_on_status_not_touch_wait() {
+        let mut sm = Enroll::with_total(0, 2);
+        assert_eq!(
+            sm.start(),
+            EnrollAction::Send(vec![0x40, 0xff, 0x01, 0x00, 0x02, 0x00, 0x00])
+        );
+        assert_eq!(
+            sm.pending_read().map(|(ep, len, _)| (ep, len)),
+            Some((ReplyEndpoint::TouchWait, 2))
+        );
+        for _ in 0..2 {
+            let _ = sm.step(&[0x40, 0x00]);
+            let _ = sm.take_send();
+        }
+        assert_eq!(
+            sm.pending_read().map(|(ep, len, _)| (ep, len)),
+            Some((ReplyEndpoint::Status, 3)),
+            "the collision check replies on 0x83 with 3 bytes"
+        );
+    }
+
+    #[test]
+    fn the_commit_is_read_on_status() {
+        let mut sm = Enroll::with_total(0, 1);
+        let _ = sm.start();
+        let _ = sm.step(&[0x40, 0x00]);
+        let _ = sm.take_send();
+        let _ = sm.step(&[0x40, 0x00, 0xff]);
+        assert_eq!(
+            sm.pending_read().map(|(ep, len, _)| (ep, len)),
+            Some((ReplyEndpoint::Status, 2))
+        );
+    }
+
+    #[test]
+    fn a_finished_machine_has_nothing_pending() {
+        let mut sm = Enroll::with_total(0, 1);
+        let _ = sm.start();
+        let _ = sm.step(&[0x40, 0x00]);
+        let _ = sm.take_send();
+        let _ = sm.step(&[0x40, 0x00, 0xff]);
+        assert_eq!(sm.step(&[0x40, 0x00]), EnrollAction::Complete(0));
+        assert_eq!(sm.pending_read(), None);
     }
 }
 

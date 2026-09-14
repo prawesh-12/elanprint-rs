@@ -11,9 +11,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use elanmoc_proto::{
-    Command, Enroll, EnrollAction, Response, SlotState, Status, TOTAL_ENROLL_ATTEMPTS,
-};
+use elanmoc_proto::{Command, Enroll, EnrollAction, Response, SlotState, Status};
 use elanmoc_store::Store;
 use elanmoc_usb::{EndpointIn, Transport, UsbError};
 use tokio::sync::mpsc;
@@ -541,15 +539,12 @@ impl<T: Transport> Worker<T> {
             ));
         };
         loop {
-            let raw = self
-                .round(
-                    &out,
-                    EndpointIn::TouchWait,
-                    2,
-                    enroll_sample_timeout(),
-                    cancel,
-                )
-                .await?;
+            let Some((ep, len, timeout)) = sm.pending_read() else {
+                return Err(WorkerError::Enroll(
+                    elanmoc_proto::EnrollError::UnexpectedReply,
+                ));
+            };
+            let raw = self.round(&out, endpoint(ep), len, timeout, cancel).await?;
             match sm.step(&raw) {
                 EnrollAction::EmitProgress { done, total } => {
                     sink.emit(OpEvent::EnrollStatus {
@@ -558,12 +553,7 @@ impl<T: Transport> Worker<T> {
                     })
                     .await;
                     tracing::info!("sample {done} of {total} accepted");
-                    let Some(EnrollAction::Send(next)) = sm.take_send() else {
-                        return Err(WorkerError::Enroll(
-                            elanmoc_proto::EnrollError::UnexpectedReply,
-                        ));
-                    };
-                    out = next;
+                    out = self.take_send(&mut sm)?;
                 }
                 EnrollAction::EmitRetry(r) => {
                     sink.emit(OpEvent::EnrollStatus {
@@ -571,42 +561,9 @@ impl<T: Transport> Worker<T> {
                         done: false,
                     })
                     .await;
-                    let Some(EnrollAction::Send(next)) = sm.take_send() else {
-                        return Err(WorkerError::Enroll(
-                            elanmoc_proto::EnrollError::UnexpectedReply,
-                        ));
-                    };
-                    out = next;
+                    out = self.take_send(&mut sm)?;
                 }
-                EnrollAction::Send(next) => {
-                    // First send after the last sample is the collision
-                    // check (3 bytes), whose reply queues the commit.
-                    let commit = if next.len() == 3 && next.starts_with(&[0x40, 0xff, 0x10]) {
-                        let raw = self
-                            .round(
-                                &next,
-                                EndpointIn::Status,
-                                3,
-                                Command::CheckCollision.timeout(),
-                                cancel,
-                            )
-                            .await?;
-                        match sm.step(&raw) {
-                            EnrollAction::Send(commit) => commit,
-                            EnrollAction::Fail(e) => return Err(WorkerError::Enroll(e)),
-                            _ => {
-                                return Err(WorkerError::Enroll(
-                                    elanmoc_proto::EnrollError::UnexpectedReply,
-                                ));
-                            }
-                        }
-                    } else {
-                        next
-                    };
-                    return self
-                        .commit_round(&commit, sink, &mut sm, finger, &user, cancel)
-                        .await;
-                }
+                EnrollAction::Send(next) => out = next,
                 EnrollAction::Complete(id) => {
                     return self.record(sink, finger, &user, id).await;
                 }
@@ -615,27 +572,9 @@ impl<T: Transport> Worker<T> {
         }
     }
 
-    async fn commit_round(
-        &mut self,
-        commit: &[u8],
-        sink: &mut OpSink,
-        sm: &mut Enroll,
-        finger: &str,
-        user: &str,
-        cancel: &CancellationToken,
-    ) -> Result<(), WorkerError> {
-        let raw = self
-            .round(
-                commit,
-                EndpointIn::Status,
-                2,
-                Command::commit(0).timeout(),
-                cancel,
-            )
-            .await?;
-        match sm.step(&raw) {
-            EnrollAction::Complete(id) => self.record(sink, finger, user, id).await,
-            EnrollAction::Fail(e) => Err(WorkerError::Enroll(e)),
+    fn take_send(&self, sm: &mut Enroll) -> Result<Vec<u8>, WorkerError> {
+        match sm.take_send() {
+            Some(EnrollAction::Send(next)) => Ok(next),
             _ => Err(WorkerError::Enroll(
                 elanmoc_proto::EnrollError::UnexpectedReply,
             )),
@@ -735,13 +674,13 @@ impl<T: Transport> Worker<T> {
     }
 }
 
-fn enroll_sample_timeout() -> Duration {
-    Command::Enroll {
-        finger_id: 0,
-        total_attempts: TOTAL_ENROLL_ATTEMPTS,
-        attempts_done: 0,
+/// The transport endpoint for a reply endpoint the protocol crate names.
+fn endpoint(ep: elanmoc_proto::ReplyEndpoint) -> EndpointIn {
+    match ep {
+        elanmoc_proto::ReplyEndpoint::Image => EndpointIn::Image,
+        elanmoc_proto::ReplyEndpoint::Status => EndpointIn::Status,
+        elanmoc_proto::ReplyEndpoint::TouchWait => EndpointIn::TouchWait,
     }
-    .timeout()
 }
 
 fn status_code(status: Status) -> u8 {

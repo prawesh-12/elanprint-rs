@@ -24,6 +24,7 @@ const ERASE_PREFIXES: [&[u8]; 3] = [
 #[derive(Default)]
 struct Wire {
     sent: Vec<Vec<u8>>,
+    reads: Vec<(Vec<u8>, EndpointIn, usize)>,
     replies: Vec<Result<Vec<u8>, ()>>,
 }
 
@@ -35,6 +36,7 @@ impl Fake {
     fn new(replies: Vec<Vec<u8>>) -> Self {
         let wire = Wire {
             sent: Vec::new(),
+            reads: Vec::new(),
             replies: replies.into_iter().map(Ok).collect(),
         };
         Self(Arc::new(Mutex::new(wire)))
@@ -48,6 +50,14 @@ impl Fake {
     fn sent(&self) -> Vec<Vec<u8>> {
         match self.0.lock() {
             Ok(w) => w.sent.clone(),
+            Err(e) => panic!("wire lock: {e}"),
+        }
+    }
+
+    /// Which endpoint and length each command's reply was read on.
+    fn reads(&self) -> Vec<(Vec<u8>, EndpointIn, usize)> {
+        match self.0.lock() {
+            Ok(w) => w.reads.clone(),
             Err(e) => panic!("wire lock: {e}"),
         }
     }
@@ -69,8 +79,8 @@ impl Transport for Fake {
     fn cmd<'a>(
         &'a self,
         out: &'a [u8],
-        _ep: EndpointIn,
-        _in_len: usize,
+        ep: EndpointIn,
+        in_len: usize,
         _timeout: Duration,
         _cancel: &'a CancellationToken,
     ) -> impl std::future::Future<Output = Result<Vec<u8>, UsbError>> + Send + 'a {
@@ -79,6 +89,7 @@ impl Transport for Fake {
             Err(e) => panic!("wire lock: {e}"),
         };
         wire.sent.push(out.to_vec());
+        wire.reads.push((out.to_vec(), ep, in_len));
         let reply = if wire.replies.is_empty() {
             Err(UsbError::Timeout(Duration::from_secs(1)))
         } else {
@@ -551,5 +562,67 @@ async fn a_delete_for_an_untracked_finger_erases_nothing() {
     let intent = DeleteIntent::from_user_request("u", "left-thumb");
     assert!(w.delete_finger(&intent).await.is_err(), "refused");
     assert!(fake.erases().is_empty(), "nothing was erased");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A full enrol drives to commit and reads every reply where it belongs.
+///
+/// The daemon read the collision check on `0x84` for 2 bytes, the sample's
+/// endpoint, because the loop assumed every queued send was a touch wait.
+/// The chip answers `40 ff 10` on `0x83` with 3 bytes, so the read waited
+/// out the 30 second touch timeout and the commit was never sent.
+#[tokio::test]
+async fn an_enrol_reads_every_reply_on_the_right_endpoint() {
+    let path = store_path("endpoints");
+    write_store(&path, &[]);
+    let mut replies = vec![enrolled_num(0), vec![0x40, 0xff]];
+    replies.extend(std::iter::repeat_n(vec![0x40, 0x00], 8)); // eight samples
+    replies.push(vec![0x40, 0x00, 0xff]); // collision check, no clash
+    replies.push(vec![0x40, 0x00]); // commit
+    let fake = Fake::new(replies);
+    let mut w = claimed(fake.clone(), path.clone());
+    let op = match w.try_begin() {
+        Ok(op) => op,
+        Err(e) => panic!("begin: {e}"),
+    };
+    let (tx, mut rx) = mpsc::channel(32);
+    if let Err(e) = w
+        .enroll(
+            &op,
+            "left-index-finger".to_string(),
+            OpSink::new(OpKind::Enroll, tx),
+            CancellationToken::new(),
+        )
+        .await
+    {
+        panic!("enrol drove to commit: {e}");
+    }
+
+    for (out, ep, len) in fake.reads() {
+        let (want_ep, want_len) = match out.as_slice() {
+            [0x40, 0xff, 0x01, ..] => (EndpointIn::TouchWait, 2),
+            [0x40, 0xff, 0x10] => (EndpointIn::Status, 3),
+            [0x40, 0xff, 0x11, ..] => (EndpointIn::Status, 2),
+            [0x40, 0xff, 0x12, ..] => (EndpointIn::Status, 70),
+            _ => continue,
+        };
+        assert_eq!(ep, want_ep, "wrong endpoint for {out:02x?}");
+        assert_eq!(len, want_len, "wrong length for {out:02x?}");
+    }
+    assert!(
+        fake.sent().iter().any(|o| o.starts_with(&[0x40, 0xff, 0x11])),
+        "commit was sent: {:?}",
+        fake.sent()
+    );
+    assert!(fake.erases().is_empty(), "the enrol erased nothing");
+    assert_eq!(read_store(&path)["u"]["left-index-finger"], 0);
+    let events = drain(&mut rx).await;
+    assert_eq!(
+        events.last(),
+        Some(&OpEvent::EnrollStatus {
+            result: "enroll-completed".to_string(),
+            done: true,
+        })
+    );
     let _ = std::fs::remove_file(&path);
 }
