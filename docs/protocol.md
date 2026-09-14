@@ -66,7 +66,7 @@ Not used by this driver. It may be how the Windows WBF stack binds. Reading the 
 | `enrolled_num`             | `40 ff 04`                | 3       | 2       | `0x83` | no                     | **confirmed** |
 | `enrolled_num1`            | `40 ff 00`                | 3       | 2       | `0x83` | no                     | documented |
 | `finger_info`              | `40 ff 12`                | 4       | 2 or 70 | `0x83` | no                     | **confirmed** |
-| `verify`                   | `40 ff 03`                | 3       | 2       | `0x84` | no                     | documented |
+| `verify`                   | `40 ff 03`                | 3       | 2       | `0x84` | no                     | **confirmed** |
 | `abort`                    | `40 ff 02`                | 3       | 2       | `0x83` | no                     | documented |
 | `enroll`                   | `40 ff 01`                | 7       | 2       | `0x84` | writes flash           | documented |
 | `check_enrolled_collision` | `40 ff 10`                | 3       | 3       | `0x83` | no                     | documented |
@@ -241,7 +241,8 @@ These opcodes appear in the source's notes. They are recorded here so nobody reu
 | `fw_ver` | 2 bytes, major then minor | `01 08` | Matches. Agrees with `bcdDevice 0108`. |
 | `sensor_size` | 4 bytes, width `b0+1`, height `b2+1` | `4f 00 4f 00`, 80 x 80 | Matches, off-by-one confirmed. |
 | `enrolled_num` | byte 1 is the count | `40 00`, count 0 | Matches. Byte 0 echoes the command's `0x40`. |
-| `finger_info` | 70 byte record per slot | **2 bytes, `40 ff`**, ids 0 to 9 | **Differs.** No 70 byte record seen. Meaning unresolved, see Q-002. |
+| `finger_info` | 70 byte record per slot | **2 bytes, `40 ff`**, ids 0 to 15 | **Differs.** 2 byte status form for an empty slot. `0xff` is "empty", not the source's "stuck sensor": the documented remedy (`verify`) was run and changed nothing. |
+| `verify` | `40 ff 03`, reply on `0x84` | `40 fd` on `0x84` | Matches, **but** needs `enrolled_num` sent first on the same claim or it never answers. Not in the source. See "The arming rule". |
 
 ---
 
