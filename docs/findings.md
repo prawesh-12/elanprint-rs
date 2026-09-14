@@ -721,3 +721,13 @@ daemon returns the timeout as-is with no retry.
 Also fixed: zbus must run on the tokio runtime (`features = ["tokio"]`).
 On its default executor, interface methods panic with "no reactor running"
 the moment a USB transfer sleeps.
+
+---
+
+## 2026-09-14 Live sync against count 0, corrupt store pruned
+
+Before GATE 3a, device count 0. `elanmoc-cli sync --store` with a missing
+file: "store holds nothing". With `{"alice":{"right-index-finger":1}}`:
+reported stale ("device holds nothing, enrolled_num is 0"), and `--prune`
+removed it, leaving `{}`. Ambiguous-slot behavior is unit tests only until a
+second slot is occupied.
