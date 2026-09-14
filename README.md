@@ -21,7 +21,7 @@ The app is a demo front end over the daemon. Granting unlocks the window
 only. Real session auth stays on the PAM path.
 
 ```bash
-cargo run -p elanmoc-login
+cargo login-app
 ```
 
 Flow in the window: Connect, pick user and finger, Login with fingerprint,

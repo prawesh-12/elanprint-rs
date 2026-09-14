@@ -39,6 +39,36 @@ pub enum ClientError {
     NoReader,
 }
 
+impl ClientError {
+    /// Short human text for the status line. Raw D-Bus names never show.
+    pub fn friendly(&self) -> String {
+        match self {
+            Self::NoReader => "no fingerprint reader on the bus".to_string(),
+            Self::Dbus(e) if is_named(e, "NoEnrolledPrints") => {
+                "no fingerprints enrolled yet".to_string()
+            }
+            Self::Dbus(e) if is_named(e, "PermissionDenied") => {
+                "not allowed, check permissions".to_string()
+            }
+            Self::Dbus(_) => "reader error, see log".to_string(),
+        }
+    }
+
+    /// Listing prints for a user with none is normal, not a failure.
+    fn empty_when_no_prints(self) -> Result<Vec<String>, Self> {
+        match &self {
+            Self::Dbus(e) if is_named(e, "NoEnrolledPrints") => Ok(Vec::new()),
+            _ => Err(self),
+        }
+    }
+}
+
+/// Whether a D-Bus error carries the given fprintd error name.
+fn is_named(error: &zbus::Error, name: &str) -> bool {
+    matches!(error, zbus::Error::MethodError(error_name, _, _)
+        if error_name.as_str().ends_with(name))
+}
+
 /// Connected handle to the reader.
 pub struct FingerprintClient {
     conn: Connection,
@@ -55,11 +85,15 @@ impl FingerprintClient {
         Ok(Self { conn, device })
     }
 
-    /// Fingers the daemon tracks for `user`.
+    /// Fingers the daemon tracks for `user`. Empty when none are enrolled.
     pub async fn list(&self, user: &str) -> Result<Vec<String>, ClientError> {
         let proxy = self.device_proxy().await?;
-        let fingers: Vec<String> = proxy.call("ListEnrolledFingers", &(user)).await?;
-        Ok(fingers)
+        let result: Result<Vec<String>, zbus::Error> =
+            proxy.call("ListEnrolledFingers", &(user)).await;
+        match result {
+            Ok(fingers) => Ok(fingers),
+            Err(e) => ClientError::Dbus(e).empty_when_no_prints(),
+        }
     }
 
     /// Run one verify to a terminal answer, emitting UI events on the way.

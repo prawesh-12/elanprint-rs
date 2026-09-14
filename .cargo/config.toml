@@ -1,0 +1,2 @@
+[alias]
+login-app = "run -p elanmoc-login"

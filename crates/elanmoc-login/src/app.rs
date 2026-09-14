@@ -68,10 +68,8 @@ impl LoginApp {
         let (tx, rx) = std::sync::mpsc::channel::<ConnectOutcome>();
         std::thread::spawn(move || {
             let outcome = handle.block_on(async {
-                let client = FingerprintClient::connect()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let mut fingers = client.list(&user).await.map_err(|e| e.to_string())?;
+                let client = FingerprintClient::connect().await.map_err(|e| e.friendly())?;
+                let mut fingers = client.list(&user).await.map_err(|e| e.friendly())?;
                 if !fingers.contains(&"any".to_string()) {
                     fingers.push("any".to_string());
                 }
@@ -95,7 +93,9 @@ impl LoginApp {
         let finger = self.finger.clone();
         let cancel_task = cancel.clone();
         self.handle.spawn(async move {
-            let _ = client.verify(&user, &finger, tx, cancel_task).await;
+            if let Err(e) = client.verify(&user, &finger, tx.clone(), cancel_task).await {
+                let _ = tx.send(AuthEvent::Failed(e.friendly())).await;
+            }
         });
         self.events = Some(rx);
         self.cancel = Some(cancel);
