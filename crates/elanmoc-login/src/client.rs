@@ -22,6 +22,7 @@ const DEVICE_IFACE: &str = "net.reactivated.Fprint.Device";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthEvent {
     Prompt(String),
+    Retry(String),
     Granted,
     Denied(String),
     Locked,
@@ -173,7 +174,11 @@ impl FingerprintClient {
     ) -> Result<bool, ClientError> {
         match session.step(signal) {
             Ok(Action::Prompt(text)) => {
-                self.emit(tx, AuthEvent::Prompt(text)).await;
+                if text == "touch the sensor" {
+                    self.emit(tx, AuthEvent::Prompt(text)).await;
+                } else {
+                    self.emit(tx, AuthEvent::Retry(text)).await;
+                }
                 Ok(false)
             }
             Ok(Action::Granted(_)) => {

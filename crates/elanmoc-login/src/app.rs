@@ -4,12 +4,16 @@
 //! Real session auth stays on the PAM path in Phase 7.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::{AuthEvent, FingerprintClient};
+use crate::copy;
+use crate::fx::{Fx, Pulse};
+use crate::icon;
 
 /// Screen state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,11 +37,13 @@ pub struct LoginApp {
     fingers: Vec<String>,
     status: String,
     screen: Screen,
+    last_screen: Screen,
     pending: Option<std::sync::mpsc::Receiver<ConnectOutcome>>,
     events: Option<mpsc::Receiver<AuthEvent>>,
     cancel: Option<CancellationToken>,
     handle: Handle,
     client: Option<Arc<FingerprintClient>>,
+    fx: Fx,
 }
 
 impl LoginApp {
@@ -50,11 +56,13 @@ impl LoginApp {
             fingers: vec!["any".to_string()],
             status: "connect to the reader first".to_string(),
             screen: Screen::Disconnected,
+            last_screen: Screen::Disconnected,
             pending: None,
             events: None,
             cancel: None,
             handle,
             client: None,
+            fx: Fx::new(),
         }
     }
 
@@ -145,27 +153,41 @@ impl LoginApp {
             while let Ok(event) = rx.try_recv() {
                 match event {
                     AuthEvent::Prompt(text) => self.status = text,
+                    AuthEvent::Retry(hint) => {
+                        self.status = hint;
+                        self.fx.flash(egui::Color32::from_rgb(255, 191, 0));
+                        self.fx.ripple();
+                    }
                     AuthEvent::Finger(finger) => {
                         self.status = format!("verifying {finger}");
+                        self.fx.ripple();
+                        self.fx.set_pulse(Pulse::Scan);
                     }
                     AuthEvent::Granted => {
                         self.screen = Screen::Granted;
                         self.status = format!("access granted for {}", self.user);
+                        self.fx.flash(egui::Color32::GREEN);
+                        self.fx.set_pulse(Pulse::Off);
                         done = true;
                     }
                     AuthEvent::Denied(text) => {
                         self.screen = Screen::Denied;
                         self.status = text;
+                        self.fx.flash(egui::Color32::RED);
+                        self.fx.shake();
+                        self.fx.set_pulse(Pulse::Off);
                         done = true;
                     }
                     AuthEvent::Locked => {
                         self.screen = Screen::Locked;
-                        self.status = "no tries left, use password".to_string();
+                        self.status = copy::PASSWORD_FALLBACK.to_string();
+                        self.fx.set_pulse(Pulse::Off);
                         done = true;
                     }
                     AuthEvent::Failed(text) => {
                         self.screen = Screen::Failed;
                         self.status = text;
+                        self.fx.set_pulse(Pulse::Off);
                         done = true;
                     }
                     AuthEvent::Finished => done = true,
@@ -183,31 +205,43 @@ impl eframe::App for LoginApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
         polish(ctx);
+        if self.screen != self.last_screen {
+            match self.screen {
+                Screen::Waiting => self.fx.set_pulse(Pulse::Breathe),
+                Screen::Disconnected | Screen::Ready => self.fx.set_pulse(Pulse::Breathe),
+                Screen::Granted | Screen::Denied | Screen::Locked | Screen::Failed => {
+                    self.fx.set_pulse(Pulse::Off);
+                }
+            }
+            self.last_screen = self.screen.clone();
+        }
+        let now = Instant::now();
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(18.0);
-            header(ui);
-            ui.add_space(10.0);
-            reader_card(ui, self, ctx);
-            ui.add_space(8.0);
-            form_card(ui, self, ctx);
-            ui.add_space(8.0);
-            verdict(ui, self);
-            ui.add_space(6.0);
-            ui.centered_and_justified(|ui| {
-                ui.label(
-                    egui::RichText::new("demo front end, granting unlocks this window only")
-                        .small()
-                        .weak(),
-                );
+            ui.vertical_centered(|ui| {
+                ui.set_max_width(480.0);
+                ui.add_space(18.0);
+                header(ui, self, now);
+                ui.add_space(12.0);
+                reader_block(ui, self, ctx);
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(10.0);
+                form_block(ui, self);
+                ui.add_space(10.0);
+                verdict(ui, self, now);
+                ui.add_space(12.0);
+                ui.label(egui::RichText::new(copy::DISCLAIMER).small().weak());
             });
         });
-        if self.events.is_some() || self.pending.is_some() {
-            ctx.request_repaint();
+        if self.fx.animating(now) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        } else if self.events.is_some() || self.pending.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 }
 
-/// Larger type, roomier controls, rounded cards.
+/// Larger type, roomier controls, rounded widgets.
 fn polish(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.text_styles.insert(
@@ -234,104 +268,171 @@ fn polish(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-/// Centered mark, title and subtitle.
-fn header(ui: &mut egui::Ui) {
+/// Centered mark with pulse, flash, ripple, and dim states.
+fn header(ui: &mut egui::Ui, app: &LoginApp, now: Instant) {
     ui.vertical_centered(|ui| {
-        fingerprint_mark(ui, 54.0, ui.visuals().strong_text_color());
-        ui.heading("elanmoc login");
-        ui.label(egui::RichText::new("fingerprint sign-in").weak());
-    });
-}
-
-/// Reader state with a status dot and a connect button.
-fn reader_card(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
-    card(ui, |ui| {
-        ui.horizontal(|ui| {
-            let (dot, text) = match app.screen {
-                Screen::Disconnected => (egui::Color32::RED, "no reader"),
-                _ => (egui::Color32::GREEN, "reader ready"),
-            };
-            dot_mark(ui, dot, 9.0);
-            ui.label(text);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("connect").clicked() {
-                    app.connect(ctx);
-                }
-            });
-        });
-        if app.pending.is_some() {
-            ui.label(egui::RichText::new("connecting on the system bus").weak());
+        let dimmed = matches!(app.screen, Screen::Locked | Screen::Disconnected);
+        let base = if dimmed {
+            ui.visuals().weak_text_color()
+        } else {
+            ui.visuals().strong_text_color()
+        };
+        let mut mark = if dimmed {
+            base
+        } else {
+            base.gamma_multiply(app.fx.pulse_alpha(now))
+        };
+        if let Some(flash) = app.fx.flash_now(now) {
+            mark = flash;
         }
+        let response = icon::fingerprint(ui, 64.0, mark);
+        if let Some((radius, alpha)) = app.fx.ripple_now(now) {
+            if radius > 0.0 && alpha > 0.0 {
+                ui.painter().add(egui::Shape::circle_stroke(
+                    response.rect.center(),
+                    radius,
+                    egui::Stroke::new(2.0, mark.gamma_multiply(alpha)),
+                ));
+            }
+        }
+        ui.heading(copy::TITLE);
+        ui.label(egui::RichText::new(copy::SUBTITLE).weak());
     });
 }
 
-/// User and finger pickers.
-fn form_card(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
-    card(ui, |ui| {
-        let editing = matches!(app.screen, Screen::Disconnected | Screen::Ready);
-        ui.horizontal(|ui| {
-            ui.label("user");
-            ui.add_enabled(
-                editing,
-                egui::TextEdit::singleline(&mut app.user).desired_width(220.0),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.label("finger");
+/// Connect, pick, scan as one sequential flow.
+fn reader_block(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
+    match app.screen {
+        Screen::Disconnected => {
+            ui.label(copy::NO_READER);
+            ui.add_space(6.0);
+            let label = if app.pending.is_some() {
+                "connecting"
+            } else {
+                copy::CONNECT
+            };
+            let clicked = ui
+                .add_sized(
+                    egui::vec2(ui.available_width(), 44.0),
+                    egui::Button::new(egui::RichText::new(label).strong()),
+                )
+                .clicked();
+            if clicked {
+                app.connect(ctx);
+            }
+        }
+        Screen::Ready => {
+            ui.label("reader ready");
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("pick a finger, then start the scan below").weak());
+        }
+        Screen::Waiting => {
+            ui.label("reader ready");
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("touch the sensor").strong());
+        }
+        Screen::Granted | Screen::Denied | Screen::Locked | Screen::Failed => {
+            ui.label(egui::RichText::new(&app.status).strong());
+        }
+    }
+}
+
+/// User and finger pickers plus the action button.
+fn form_block(ui: &mut egui::Ui, app: &mut LoginApp) {
+    let editing = matches!(app.screen, Screen::Disconnected | Screen::Ready);
+    let armed = matches!(app.screen, Screen::Ready);
+    ui.horizontal(|ui| {
+        ui.label("user");
+        ui.add_enabled(
+            editing,
+            egui::TextEdit::singleline(&mut app.user).desired_width(240.0),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.label("finger");
+        ui.add_enabled_ui(editing, |ui| {
             egui::ComboBox::from_id_salt("finger")
-                .selected_text(&app.finger)
-                .width(220.0)
+                .selected_text(app.finger.clone())
+                .width(240.0)
                 .show_ui(ui, |ui| {
                     for name in app.fingers.clone() {
                         ui.selectable_value(&mut app.finger, name.clone(), name);
                     }
                 });
         });
-        ui.add_space(4.0);
-        match app.screen {
-            Screen::Waiting => {
-                if full_button(ui, "cancel").clicked() {
-                    app.cancel_login();
-                }
-            }
-            Screen::Granted => {
-                if full_button(ui, "sign out").clicked() {
-                    app.logout();
-                }
-            }
-            _ => {
-                if full_button(ui, "login with fingerprint").clicked() {
-                    app.start_login();
-                }
+    });
+    if app.fingers.len() == 1 && app.fingers.first().is_some_and(|f| f == "any") {
+        ui.label(egui::RichText::new(copy::NOTHING_ENROLLED).small().weak());
+    }
+    ui.add_space(6.0);
+    match app.screen {
+        Screen::Waiting => {
+            if full_button(ui, copy::CANCEL).clicked() {
+                app.cancel_login();
             }
         }
-        let _ = ctx;
-    });
+        Screen::Granted => {
+            if full_button(ui, copy::SIGNOUT).clicked() {
+                app.logout();
+            }
+        }
+        _ => {
+            ui.add_enabled_ui(armed, |ui| {
+                if full_button(ui, copy::LOGIN).clicked() {
+                    app.start_login();
+                }
+            });
+            if matches!(app.screen, Screen::Locked | Screen::Failed) {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(copy::PASSWORD_FALLBACK)
+                        .small()
+                        .weak(),
+                );
+            }
+        }
+    }
 }
 
-/// Big centered verdict with a status dot.
-fn verdict(ui: &mut egui::Ui, app: &LoginApp) {
+/// Centered verdict with dot, shake, and granted check.
+fn verdict(ui: &mut egui::Ui, app: &LoginApp, now: Instant) {
     let color = match app.screen {
         Screen::Granted => egui::Color32::GREEN,
         Screen::Denied | Screen::Locked | Screen::Failed => egui::Color32::RED,
         Screen::Waiting => egui::Color32::YELLOW,
         Screen::Disconnected | Screen::Ready => egui::Color32::GRAY,
     };
+    let dx = app.fx.shake_dx(now);
     ui.vertical_centered(|ui| {
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            dot_mark(ui, color, 11.0);
-            ui.label(egui::RichText::new(&app.status).size(19.0));
-        });
+        if matches!(app.screen, Screen::Granted) {
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+            icon::check(ui, rect, color);
+        } else {
+            ui.horizontal(|ui| {
+                ui.add_space(dx);
+                dot_mark(ui, color, 11.0);
+            });
+        }
+        ui.label(egui::RichText::new(&app.status).size(19.0));
+        if matches!(app.screen, Screen::Locked) {
+            ui.label(
+                egui::RichText::new(copy::PASSWORD_FALLBACK)
+                    .small()
+                    .weak(),
+            );
+        }
     });
 }
 
-/// Rounded container for a screen section.
-fn card(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::group(ui.style())
-        .corner_radius(egui::CornerRadius::same(12))
-        .inner_margin(14.0)
-        .show(ui, body);
+/// Filled status dot. Drawn, not a glyph: the default font lacks it.
+fn dot_mark(ui: &mut egui::Ui, color: egui::Color32, radius: f32) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(radius * 2.0, radius * 2.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().circle_filled(rect.center(), radius, color);
 }
 
 /// Full-width action button.
@@ -340,36 +441,4 @@ fn full_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
         egui::vec2(ui.available_width(), 44.0),
         egui::Button::new(egui::RichText::new(text).strong()),
     )
-}
-
-/// Filled status dot. Drawn, not a glyph: the default font lacks ●.
-fn dot_mark(ui: &mut egui::Ui, color: egui::Color32, radius: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(radius * 2.0, radius * 2.0), egui::Sense::hover());
-    ui.painter().circle_filled(rect.center(), radius, color);
-}
-
-/// Fingerprint mark drawn from concentric arcs.
-fn fingerprint_mark(ui: &mut egui::Ui, size: f32, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let center = rect.center() + egui::vec2(0.0, size * 0.12);
-    let stroke = egui::Stroke::new(2.5, color);
-    for (i, radius) in [0.16, 0.30, 0.44].iter().map(|f| f * size).enumerate() {
-        let _ = i;
-        ui.painter().add(egui::Shape::line(
-            arc_points(center, radius, -2.4, -0.7),
-            stroke,
-        ));
-    }
-    ui.painter().circle_filled(center + egui::vec2(0.0, -size * 0.30), 3.0, color);
-}
-
-/// Points along an arc, for the mark above.
-fn arc_points(center: egui::Pos2, radius: f32, from: f32, to: f32) -> Vec<egui::Pos2> {
-    let mut points = Vec::with_capacity(24);
-    let mut angle = from;
-    while angle <= to {
-        points.push(center + egui::vec2(angle.cos(), angle.sin()) * radius);
-        angle += (to - from) / 24.0;
-    }
-    points
 }

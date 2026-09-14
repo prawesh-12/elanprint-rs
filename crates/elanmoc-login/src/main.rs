@@ -8,6 +8,9 @@ use tracing_subscriber::EnvFilter;
 
 mod app;
 mod client;
+mod copy;
+mod fx;
+mod icon;
 
 use app::LoginApp;
 
