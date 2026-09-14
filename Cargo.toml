@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/elanmoc-usb", "crates/elanmoc-proto", "crates/elanmoc-store", "crates/elanmoc-algo", "crates/elanmoc-cli", "crates/elanmocd"]
+members = ["crates/elanmoc-usb", "crates/elanmoc-proto", "crates/elanmoc-store", "crates/elanmoc-algo", "crates/elanmoc-cli", "crates/elanmocd", "crates/elanmoc-login"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,6 +19,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+egui = "0.32"
+futures-util = "0.3"
 
 elanmoc-usb = { path = "crates/elanmoc-usb" }
 elanmoc-proto = { path = "crates/elanmoc-proto" }

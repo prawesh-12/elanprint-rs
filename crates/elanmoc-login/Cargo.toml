@@ -1,0 +1,25 @@
+[package]
+name = "elanmoc-login"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "elanmoc-login"
+path = "src/main.rs"
+
+[dependencies]
+elanmoc-algo.workspace = true
+anyhow.workspace = true
+egui.workspace = true
+futures-util.workspace = true
+eframe = { version = "0.32", default-features = false, features = ["default_fonts", "glow", "x11"] }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zbus.workspace = true
+
+[lints]
+workspace = true
