@@ -210,7 +210,7 @@ impl Command {
             }
             Self::FingerInfo(_) | Self::ReadRegister(_) => Duration::from_secs(2),
             Self::Verify | Self::Enroll { .. } => Duration::from_secs(30),
-            Self::CheckCollision => Duration::from_secs(2),
+            Self::CheckCollision => Duration::from_secs(5),
             Self::Commit { .. } | Self::Delete(_) | Self::DeleteSubsid { .. } => {
                 Duration::from_secs(5)
             }

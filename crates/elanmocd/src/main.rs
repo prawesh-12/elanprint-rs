@@ -259,6 +259,7 @@ async fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(elanmoc_store::DEFAULT_PATH));
     let worker = Arc::new(Mutex::new(Worker::new(store_path)));
+    let op_cancel: Arc<Mutex<Option<CancellationToken>>> = Arc::new(Mutex::new(None));
 
     let session = std::env::var("ELANMOC_BUS").is_ok_and(|v| v == "session");
     let conn = if session {
@@ -271,14 +272,74 @@ async fn main() -> anyhow::Result<()> {
         .at(
             DEVICE_PATH,
             Device {
-                worker,
-                op_cancel: Arc::new(Mutex::new(None)),
+                worker: worker.clone(),
+                op_cancel: op_cancel.clone(),
             },
         )
         .await?;
     conn.request_name(BUS_NAME).await?;
     tracing::info!("claimed {BUS_NAME}, serving {DEVICE_PATH}");
 
-    std::future::pending::<()>().await;
+    let sleep_worker = worker.clone();
+    let sleep_cancel = op_cancel.clone();
+    let sleep_conn = conn.clone();
+    tokio::spawn(async move {
+        sleep_listener(sleep_conn, sleep_worker, sleep_cancel).await;
+    });
+
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = term.recv() => {},
+    }
+    tracing::info!("shutting down, aborting chip session");
+    if let Some(cancel) = op_cancel.lock().await.take() {
+        cancel.cancel();
+    }
+    worker.lock().await.release().await;
     Ok(())
+}
+
+/// Watch logind sleep signals. Suspend drops the handle, resume reopens lazily.
+async fn sleep_listener(
+    conn: Connection,
+    worker: Arc<Mutex<Worker>>,
+    op_cancel: Arc<Mutex<Option<CancellationToken>>>,
+) {
+    use futures_util::StreamExt as _;
+    let rule: zbus::MatchRule<'_> = match zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.login1.Manager")
+        .and_then(|b| b.member("PrepareForSleep"))
+        .and_then(|b| b.path("/org/freedesktop/login1"))
+        .map(|b| b.build())
+    {
+        Ok(rule) => rule,
+        Err(e) => {
+            tracing::error!("bad sleep match rule: {e}");
+            return;
+        }
+    };
+    let mut stream = match zbus::MessageStream::for_match_rule(rule, &conn, None).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            tracing::error!("sleep subscribe failed: {e}");
+            return;
+        }
+    };
+    while let Some(Ok(msg)) = stream.next().await {
+        let Ok(suspending) = msg.body().deserialize::<bool>() else {
+            continue;
+        };
+        if suspending {
+            if let Some(cancel) = op_cancel.lock().await.take() {
+                cancel.cancel();
+            }
+            worker.lock().await.suspend().await;
+            tracing::info!("suspended, handle dropped");
+        } else {
+            worker.lock().await.resume();
+            tracing::info!("resumed, reopen on next claim");
+        }
+    }
 }

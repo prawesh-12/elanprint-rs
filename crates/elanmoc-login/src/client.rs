@@ -18,6 +18,19 @@ const MANAGER_PATH: &str = "/net/reactivated/Fprint/Manager";
 const MANAGER_IFACE: &str = "net.reactivated.Fprint.Manager";
 const DEVICE_IFACE: &str = "net.reactivated.Fprint.Device";
 
+/// UI-facing enrollment events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnrollEvent {
+    Stage {
+        done: u8,
+        total: u8,
+    },
+    Retry(String),
+    Completed,
+    Failed(String),
+    Finished,
+}
+
 /// UI-facing authentication events.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthEvent {
@@ -36,6 +49,8 @@ pub enum AuthEvent {
 pub enum ClientError {
     #[error("D-Bus error: {0}")]
     Dbus(#[from] zbus::Error),
+    #[error("bad property: {0}")]
+    Variant(#[from] zbus::zvariant::Error),
     #[error("no fingerprint reader on the bus")]
     NoReader,
 }
@@ -52,6 +67,7 @@ impl ClientError {
                 "not allowed, check permissions".to_string()
             }
             Self::Dbus(_) => "reader error, see log".to_string(),
+            Self::Variant(_) => "reader error, see log".to_string(),
         }
     }
 
@@ -100,6 +116,108 @@ impl FingerprintClient {
         match result {
             Ok(fingers) => Ok(fingers),
             Err(e) => ClientError::Dbus(e).empty_when_no_prints(),
+        }
+    }
+
+    /// Total enroll stages. -1 means unclaimed, per docs/dbus-device.xml.
+    pub async fn stages(&self) -> Result<i32, ClientError> {
+        let props = Proxy::new(
+            &self.conn,
+            BUS_NAME,
+            &self.device,
+            "org.freedesktop.DBus.Properties",
+        )
+        .await?;
+        let value: zbus::zvariant::OwnedValue = props
+            .call("Get", &(DEVICE_IFACE, "num-enroll-stages"))
+            .await?;
+        Ok(i32::try_from(&value)?)
+    }
+
+    /// Delete one finger: Claim, DeleteEnrolledFinger, Release.
+    pub async fn delete_finger(&self, user: &str, finger: &str) -> Result<(), ClientError> {
+        let proxy = self.device_proxy().await?;
+        proxy.call::<_, _, ()>("Claim", &(user)).await?;
+        let result: Result<(), zbus::Error> =
+            proxy.call("DeleteEnrolledFinger", &(finger)).await;
+        let _ = proxy.call::<_, _, ()>("Release", &()).await;
+        result.map_err(ClientError::Dbus)
+    }
+
+    /// Run one enroll to a terminal answer, emitting UI events on the way.
+    pub async fn enroll(
+        &self,
+        user: &str,
+        finger: &str,
+        tx: mpsc::Sender<EnrollEvent>,
+        cancel: CancellationToken,
+    ) -> Result<(), ClientError> {
+        let proxy = self.device_proxy().await?;
+        proxy.call::<_, _, ()>("Claim", &(user)).await?;
+        let started = proxy.call::<_, _, ()>("EnrollStart", &(finger)).await;
+        if let Err(e) = started {
+            let _ = proxy.call::<_, _, ()>("Release", &()).await;
+            return Err(ClientError::Dbus(e));
+        }
+        let total = match self.stages().await {
+            Ok(n) if n > 0 => n as u8,
+            _ => 0,
+        };
+        let mut statuses = proxy.receive_signal("EnrollStatus").await?;
+        let mut done: u8 = 0;
+        let outcome = self
+            .drive_enroll(&mut statuses, total, &mut done, &tx, &cancel)
+            .await;
+        let _ = proxy.call::<_, _, ()>("EnrollStop", &()).await;
+        let _ = proxy.call::<_, _, ()>("Release", &()).await;
+        let _ = tx.send(EnrollEvent::Finished).await;
+        outcome
+    }
+
+    async fn drive_enroll(
+        &self,
+        statuses: &mut zbus::proxy::SignalStream<'_>,
+        total: u8,
+        done: &mut u8,
+        tx: &mpsc::Sender<EnrollEvent>,
+        cancel: &CancellationToken,
+    ) -> Result<(), ClientError> {
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    return Ok(());
+                }
+                next = statuses.next() => {
+                    let Some(msg) = next else { return Ok(()); };
+                    let (result, finished): (String, bool) = msg.body().deserialize()?;
+                    match (result.as_str(), finished) {
+                        ("enroll-stage-passed", false) => {
+                            *done = done.saturating_add(1);
+                            let _ = tx.send(EnrollEvent::Stage { done: *done, total }).await;
+                        }
+                        ("enroll-completed", true) => {
+                            let _ = tx.send(EnrollEvent::Completed).await;
+                            return Ok(());
+                        }
+                        ("enroll-failed" | "enroll-data-full" | "enroll-duplicate"
+                        | "enroll-unknown-error" | "enroll-disconnected", true) => {
+                            let _ = tx.send(EnrollEvent::Failed(result)).await;
+                            return Ok(());
+                        }
+                        ("enroll-retry-scan" | "enroll-swipe-too-short"
+                        | "enroll-finger-not-centered" | "enroll-remove-and-retry", false) => {
+                            let _ = tx.send(EnrollEvent::Retry(result)).await;
+                        }
+                        _ => {
+                            let _ = tx.send(EnrollEvent::Failed(
+                                format!("unexpected enroll status {result}"),
+                            )).await;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
         }
     }
 

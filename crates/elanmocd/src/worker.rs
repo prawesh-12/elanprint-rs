@@ -187,6 +187,22 @@ impl Worker {
         self.busy = false;
     }
 
+    /// Drop the held handle for suspend. Keeps the claim and the store.
+    pub async fn suspend(&mut self) {
+        self.abort_session().await;
+        self.usb = None;
+        self.armed = false;
+        self.busy = false;
+    }
+
+    /// Mark resume. Drops any stale handle without touching USB.
+    ///
+    /// Reopen happens lazily in `claim()`, the single open-plus-arm path.
+    pub fn resume(&mut self) {
+        self.usb = None;
+        self.armed = false;
+    }
+
     /// Fingers the store tracks for `user`.
     pub fn list(&self, user: &str) -> Result<Vec<String>, WorkerError> {
         let store = Store::open(&self.store_path)?;
