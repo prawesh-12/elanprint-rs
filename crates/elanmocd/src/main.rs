@@ -199,17 +199,17 @@ impl Device {
         Ok(())
     }
 
-    #[zbus(property)]
+    #[zbus(property, name = "name")]
     async fn name(&self) -> String {
         DEVICE_NAME.to_string()
     }
 
-    #[zbus(property)]
+    #[zbus(property, name = "scan-type")]
     async fn scan_type(&self) -> String {
         "press".to_string()
     }
 
-    #[zbus(property)]
+    #[zbus(property, name = "num-enroll-stages")]
     async fn num_enroll_stages(&self) -> i32 {
         if self.worker.lock().await.is_claimed() {
             elanmoc_proto::TOTAL_ENROLL_ATTEMPTS as i32
@@ -218,12 +218,12 @@ impl Device {
         }
     }
 
-    #[zbus(property)]
+    #[zbus(property, name = "finger-present")]
     async fn finger_present(&self) -> bool {
         false
     }
 
-    #[zbus(property)]
+    #[zbus(property, name = "finger-needed")]
     async fn finger_needed(&self) -> bool {
         self.worker.lock().await.is_busy()
     }
@@ -260,7 +260,12 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| PathBuf::from(elanmoc_store::DEFAULT_PATH));
     let worker = Arc::new(Mutex::new(Worker::new(store_path)));
 
-    let conn = Connection::system().await?;
+    let session = std::env::var("ELANMOC_BUS").is_ok_and(|v| v == "session");
+    let conn = if session {
+        Connection::session().await?
+    } else {
+        Connection::system().await?
+    };
     conn.object_server().at(MANAGER_PATH, Manager).await?;
     conn.object_server()
         .at(

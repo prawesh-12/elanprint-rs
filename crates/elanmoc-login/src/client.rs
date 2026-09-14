@@ -76,9 +76,15 @@ pub struct FingerprintClient {
 }
 
 impl FingerprintClient {
-    /// Connect on the system bus and take the first advertised device.
+    /// Connect and take the first advertised device. `ELANMOC_BUS=session`
+    /// runs against a dev daemon instead of the system bus.
     pub async fn connect() -> Result<Self, ClientError> {
-        let conn = Connection::system().await?;
+        let session = std::env::var("ELANMOC_BUS").is_ok_and(|v| v == "session");
+        let conn = if session {
+            Connection::session().await?
+        } else {
+            Connection::system().await?
+        };
         let manager = Proxy::new(&conn, BUS_NAME, MANAGER_PATH, MANAGER_IFACE).await?;
         let devices: Vec<OwnedObjectPath> = manager.call("GetDevices", &()).await?;
         let device = devices.into_iter().next().ok_or(ClientError::NoReader)?;

@@ -693,3 +693,31 @@ Two runs do not count and are recorded so the count stays honest:
 The template is real: it matches, not just commits. The different-finger
 reject series (10 runs expecting `0xfd`) is still open. Stopped at 10 of 10
 matches on the user's order.
+
+---
+
+## 2026-09-14 Daemon serves on the session bus, property names fixed
+
+`elanmocd` ran unprivileged with `ELANMOC_BUS=session` and answered a remote
+`busctl --user` sequence: `GetDevices` lists Device/0, `Claim` opens and arms
+(`enrolled_num` `40 01`, count persists from GATE 3a), `num-enroll-stages`
+reads 8 while claimed and -1 after `Release`.
+
+Two corrections from the smoke run:
+
+- zbus renders `num_enroll_stages` as `NumEnrollStages`, but fprintd's live
+  interface names it `num-enroll-stages`. All five properties now carry
+  explicit dash names and introspect exactly as `docs/dbus-device.xml`.
+- `ListEnrolledFingers` for a user with no store entry replies with the
+  correct error name `net.reactivated.Fprint.Error.NoEnrolledPrints` on the
+  wire (busctl renders unknown error names as "Input/output error", which is
+  a display artifact, not a daemon bug).
+
+One transient, stated as observation: a `Claim` re-arm on the held handle
+timed out once after about 60 seconds idle and succeeded on immediate retry
+(`40 01` in about 1 ms). Autosuspend is a hypothesis, not established. The
+daemon returns the timeout as-is with no retry.
+
+Also fixed: zbus must run on the tokio runtime (`features = ["tokio"]`).
+On its default executor, interface methods panic with "no reactor running"
+the moment a USB transfer sleeps.

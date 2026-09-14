@@ -17,19 +17,26 @@ dependencies. Match-on-chip: templates never leave the sensor.
 
 ## Run everything
 
-One command builds the workspace, runs all tests and runs clippy:
+One command runs the backend daemon and the frontend app together:
 
 ```bash
-./tools/check.sh
+./tools/run.sh
 ```
+
+Both use the session bus (`ELANMOC_BUS=session`), so no root and no fight
+with fprintd over the system name. The store lands in
+`/tmp/elanmoc-prints.json` via `ELANMOC_STORE`. The system bus stays
+untouched until GATE 6.
 
 Single commands per binary:
 
 ```bash
 cargo login-app                  # desktop login window
 cargo run -p elanmoc-cli -- info # sensor status, read only
-cargo run -p elanmocd            # daemon, needs root for the bus name
 ```
+
+`elanmocd` on the system bus needs root for the bus name. That setup waits
+for GATE 6.
 
 ## Run the login app
 
@@ -39,6 +46,8 @@ only. Real session auth stays on the PAM path.
 ```bash
 cargo login-app
 ```
+
+`ELANMOC_BUS=session` points it at a dev daemon instead of the system bus.
 
 Flow in the window: Connect, pick user and finger, Login with fingerprint,
 touch when asked. Cancel stops the wait. Sign out resets the screen.
