@@ -791,3 +791,72 @@ next claim read clean (1.8, 80x80, count 1). Self-recovered, no reset sent.
 
 No retry. A second attempt, if ordered, wants a longer collision timeout
 and tighter touch turnaround, stated as a plan change first.
+
+---
+
+## 2026-09-14 Slot 0 lost: what the surviving artifacts say
+
+Read-only `info` on the current session: fw 1.8, 80 x 80, `enrolled_num`
+`40 00`, count 0. The slot 0 template recorded at GATE 3a is gone.
+
+No capture from the window survives (`captures/` is gitignored and empty,
+and the two `tools/run.sh` sessions logged to a terminal, not to a file).
+What follows is built from files that do survive. It is an evidence chain,
+not a byte record, and is labelled as such.
+
+Daemon logs in `/tmp`, all timestamps UTC, local is +0530:
+
+| Log                    | Time     | Arming read       | Count |
+| ---------------------- | -------- | ----------------- | ----- |
+| `elanmocd-audit.log`   | 15:24:59 | `40 ff 04` `40 01` | 1     |
+| `elanmocd-step6.log`   | 16:29:23 | `40 ff 04` `40 01` | 1     |
+| `elanmocd-diag.log`    | 17:11:59 | `40 ff 04` `40 00` | 0     |
+
+So the count went 1 to 0 between 16:29:23 and 17:11:59 UTC (21:59 and 22:41
+local). `tools/run.sh` ran across that window, 22:00:33 to about 22:20
+local, from the shell history.
+
+`/tmp/elanmoc-prints.json`, the store that run uses, holds `{}` with mtime
+22:13 local, inside the window. An empty object is a saved file, not a
+missing one. Three code paths write the store: the enroll completion, which
+saves a non-empty map; `sync --prune`, which was not run; and
+`Worker::delete_finger`, which sends `delete` (`40 ff 05 <slot> 00`) and then
+saves the map with the entry removed. The store held
+`prawesh/right-index-finger` at slot 0 before that run.
+
+The build in that window is commit `80fa393`. In it, `Device::start_op` took
+the busy flag and `Worker::enroll` / `Worker::verify` took it again, so every
+spawned enroll and verify returned `Busy` before sending a single byte, and
+the error was dropped by `let _ =`. `delete_enrolled_finger` does not go
+through `start_op`. Delete was therefore the only device operation in that
+build that could reach the chip.
+
+Conclusion, stated at the strength the evidence carries: the template was
+erased by `delete`, the one path still working, and the store save at 22:13
+is the same operation's second half. It was not lost to a firmware fault, a
+failed enroll, or a `wipe_all`: `wipe_all` has no call site anywhere in the
+workspace, and enroll could not reach the wire.
+
+### The store-to-device sync theory, tested
+
+Ruled out as the cause. `Worker::delete_finger` reads the slot from the store
+and returns `NotEnrolled` when there is no entry, so an empty store cannot
+produce an erase. `elanmoc-cli sync --prune` writes the store only; it has no
+device-write path and the CLI has no delete subcommand at all. The direction
+of the dependency is the opposite of the theory: the store entry is what
+*enabled* the delete.
+
+### A second, real sync-direction fault, found in the enroll path
+
+`free_slot` scanned ids from 0 and treated the store as the record of which
+slots are occupied, with `finger_info` as a veto. On 0c90 that veto never
+fires: an occupied slot answers `40 ff`, the same two bytes an empty one
+gives, already recorded above under `finger_info`. With an empty store, which
+is the normal state for the root daemon (`/var/lib/elanmoc` does not exist on
+this machine, so no save has ever succeeded there), `free_slot` returned 0 on
+every call. The next successful enroll would have written over slot 0 to match
+an empty file.
+
+Not observed on hardware: nothing reached the enroll path in that build. It is
+read off the code plus the confirmed `40 ff` behaviour, and is recorded as a
+structural fault, not an event.
