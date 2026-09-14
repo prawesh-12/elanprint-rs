@@ -345,3 +345,61 @@ usbmon records URBs, not bus-level NAKs. If 0c90 answered `verify` on an
 endpoint with no URB pending, the device would be NAKed and **nothing would
 appear in the capture**. So these captures cannot rule out a reply arriving on
 an endpoint other than `0x84`. Only `0x84` had a read posted.
+
+## 2026-09-14 `verify` with a CONFIRMED touch, reads on both `0x83` and `0x84`
+
+The first `verify` run whose touch is confirmed. User touched the sensor with a
+flat pad, held about 1 second, a few seconds after the run started. Reads were
+posted on `0x83` and `0x84` simultaneously before the touch.
+
+**Raw bytes received: none. Neither endpoint answered.**
+
+Capture, bus 1 device 2:
+
+```
+  5.896  S  bulk OUT 0x01  -115    3  40 ff 03
+  5.896  C  bulk OUT 0x01     0    3
+  5.896  S  bulk IN  0x83  -115   64
+  5.896  S  bulk IN  0x84  -115   64
+185.898  C  bulk IN  0x83    -2    0
+185.899  C  bulk IN  0x84    -2    0
+185.899  S  bulk OUT 0x01  -115    3  40 ff 02
+185.899  C  bulk OUT 0x01     0    3
+185.911  S  bulk OUT 0x01  -115    4  40 ff 12 00
+185.911  C  bulk OUT 0x01     0    4
+185.911  S  bulk IN  0x83  -115  128
+185.911  C  bulk IN  0x83     0    2  40 ff
+```
+
+Facts:
+
+- `40 ff 03` was accepted on `0x01`, completion status 0, 3 bytes written.
+- Both IN URBs were submitted at t+5.896, in the same millisecond as the
+  command and roughly 4 seconds before the touch. Neither was posted late.
+- Both stayed pending for the full 180 seconds and ended at `-2`, our own
+  unlink, with 0 bytes. The chip sent nothing on either endpoint.
+- `finger_info 0` answered `40 ff` on `0x83` in under a millisecond, 12 ms
+  after `abort`. The chip was alive and responsive the whole time.
+
+What this rules out: the endpoint mapping is not the explanation. A reply on
+`0x83` would have been caught, because a read was posted there. The
+`0x84`-only silence of the two earlier runs was not a wrong-endpoint artefact.
+
+What this does not establish: nothing about `0x81` or `0x82`, where no read was
+posted, and nothing about why. Per the user, stopped here. No third endpoint
+tried, no variation of the command.
+
+### Consequence for Phase 3
+
+`docs/protocol.md` has `enroll` replying on `0x84`, the same endpoint and the
+same touch-wait shape as `verify`. `verify` produced nothing there on a
+confirmed touch. There is no evidence yet that any touch-wait command on this
+chip answers at all, so the enroll sequence cannot be assumed to work as
+documented. GATE 3a is not approached.
+
+### Q-002 still unresolved
+
+`finger_info 0` still returns `40 ff` after the touch. The source's workaround
+for a stuck sensor is to run `verify`, and `verify` was run, but since it
+produced no reply it cannot be said to have been performed. Empty slot versus
+stuck sensor is still undecided.
