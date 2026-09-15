@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Extract one USB device's traffic from a usbmon pcapng capture.
 
-tshark is not installed on this machine and apt is not available to the agent,
-so this reads pcapng Enhanced Packet Blocks directly and decodes the Linux
-usbmon mmapped header (DLT 115, 64 byte header).
+Reads pcapng Enhanced Packet Blocks directly and decodes the Linux usbmon
+mmapped header (DLT 115, 64 byte header), so tshark is not needed.
 
 Usage: usbmon_filter.py CAPTURE.pcapng [BUS] [DEVICE]
 """

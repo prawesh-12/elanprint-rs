@@ -13,6 +13,7 @@ fingerprint image.
 ## Contents
 
 [Status](#status) ·
+[Do I have this sensor?](#do-i-have-this-sensor) ·
 [What this project found](#what-this-project-found) ·
 [Tech stack](#tech-stack) ·
 [Requirements](#requirements) ·
@@ -20,6 +21,7 @@ fingerprint image.
 [Use](#use) ·
 [How it works](#how-it-works) ·
 [Safety](#safety) ·
+[Unverified elsewhere](#unverified-elsewhere) ·
 [Development](#development) ·
 [Credits](#credits) ·
 [License](#license)
@@ -50,6 +52,30 @@ bytes are transcribed from a source but have never been run here.
 Not done: `delete` has never been run under the current code, `wipe_all` has
 never been sent at all, and the 8 stage count is still borrowed from a
 different chip rather than confirmed on this one.
+
+## Do I have this sensor?
+
+```bash
+lsusb -d 04f3:0c90
+```
+
+One line back means yes:
+
+```
+Bus 001 Device 002: ID 04f3:0c90 Elan Microelectronics Corp. ELAN:ARM-M4
+```
+
+Nothing back means this driver is not for your machine. **`04f3:0c90` is the
+only supported device.** Other ELAN ids (`0c00`, `0c4c`, `0c5e`) speak a
+related but different protocol, and the differences found here are exactly
+why sending 0c90 bytes to them is not safe. The daemon refuses an ELAN
+sensor it does not know rather than probing it.
+
+Check your Ubuntu version too:
+
+```bash
+lsb_release -d      # 24.04 or newer
+```
 
 ## What this project found
 
@@ -107,11 +133,15 @@ The sensor is the hard limit. This is `04f3:0c90` only. Other ELAN product ids
 answer differently, and the differences above are exactly why you cannot
 assume otherwise.
 
+- **Ubuntu 24.04 or newer.** Older releases and other distributions are
+  untested; the installer warns rather than refuses.
 - Linux with usbfs. `nusb` talks to `/dev/bus/usb` directly.
 - systemd, for the service unit and the suspend and resume hooks.
 - D-Bus system bus, to own `net.reactivated.Fprint`.
 - `libpam-fprintd`, for login. This driver answers fprintd's D-Bus interface,
   so fprintd's own PAM module does the authentication.
+- `getent` from `libc-bin`, for resolving account names through NSS. Present
+  on any normal install.
 - Rust 2021 edition. No minimum version is pinned yet.
 
 No C dependencies. No libfprint, no glib, no `-sys` crates, so there is
@@ -121,12 +151,19 @@ nothing to build beyond `cargo build`.
 
 ```bash
 cargo build --release -p elanprintd
-sudo ./tools/install-system.sh
+sudo ./tools/install.sh
 ```
 
-That puts the binary in `/usr/libexec`, creates `/var/lib/elanprint` for the
-slot mapping, installs a systemd unit, masks the stock `fprintd.service` and
-starts the daemon.
+The installer checks before it touches anything: that the sensor is present
+and is `04f3:0c90`, that this is Ubuntu 24.04 or newer, that systemd is
+running, and that `/etc/pam.d/gdm-fingerprint` and `pam_fprintd.so` exist. It
+refuses without the sensor and warns on the rest.
+
+Then it installs the binary to `/usr/libexec`, creates an empty
+`/var/lib/elanprint` for the slot mapping, installs the udev rule and the
+systemd unit, masks the stock `fprintd.service` and starts the daemon.
+
+The store starts empty and is never seeded. Enrolling a finger writes it.
 
 `fprintd` is masked because it owns `net.reactivated.Fprint` and has no driver
 for this sensor, so if it wins the name the greeter sees a reader with no
@@ -139,18 +176,61 @@ Nothing under `/etc/pam.d` is touched. Ubuntu already ships
 To undo all of it:
 
 ```bash
-sudo ./tools/uninstall-system.sh
+sudo ./tools/uninstall.sh
 ```
 
-That unmasks fprintd and removes every file the installer added. Password
-login is never affected either way.
+Removes the binary, the unit and the udev rule, and unmasks fprintd. The
+store is kept. Password login is never affected either way.
 
-### Without installing
+### Templates outlive the uninstall
 
-For development, run the daemon and the demo app on the session bus, no root:
+**Uninstalling does not erase anything from the sensor.** Templates live in
+the chip's own flash. Removing the software leaves them there, and they still
+work.
+
+That matters more than it sounds, because of two findings above. The login
+path sends the finger name `any`, so the chip matches against **every**
+template it holds, not just the ones belonging to the account logging in. And
+`finger_info` answers the same bytes for an occupied slot and an empty one,
+so nothing can enumerate what is still stored.
+
+Put together: a template enrolled by a previous owner keeps authenticating
+after a reinstall, under a **different account**, with nothing on the host
+recording that it exists. The uninstaller reports how many templates remain
+and says so.
+
+**If you are passing this machine on, erase them:**
 
 ```bash
-./tools/run.sh
+sudo ./tools/uninstall.sh --wipe-device
+```
+
+That asks for typed confirmation and refuses to run without a terminal, so it
+cannot happen from a script. It sends `wipe_all`, which is documented but has
+never been run on the author's hardware, then reads the count back to check.
+
+`--delete-store` removes the host mapping too. It warns when templates remain,
+because deleting the mapping is what orphans them.
+
+### Development mode
+
+Runs on the session bus with a throwaway store, so the installed daemon and
+`/var/lib/elanprint` are untouched. No root.
+
+```bash
+./tools/dev.sh status      # sensor, service, bus owner, dev store
+./tools/dev.sh up          # daemon and app together
+./tools/dev.sh daemon      # daemon only, debug logging
+./tools/dev.sh cli info    # elanprint-cli against the dev setup
+./tools/dev.sh clean       # delete the dev store
+```
+
+The sensor is the one thing dev mode cannot share: whichever process claims
+USB interface 0 keeps it. Stop the service first, and `dev.sh` says so rather
+than failing with "Device or resource busy".
+
+```bash
+sudo systemctl stop elanprintd
 ```
 
 ## Use
@@ -221,6 +301,45 @@ hardware repair. The rules that follow from that:
   never hand out a slot the device says is in use.
 - Any error sends `abort` (`40 ff 02`) before the interface is released.
   Without it the chip stays mid-session and the next command reads stale.
+
+## Unverified elsewhere
+
+Everything below works here and has never been observed anywhere else. If you
+run this on another machine, these are the parts most likely to differ, and
+`docs/findings.md` takes appended results.
+
+**Firmware.** One unit, reporting **1.8**. The daemon logs the version on the
+first claim, so a difference is visible in `journalctl -u elanprintd`. Two of
+the four findings above may be revision specific:
+
+- the arming rule. If a touch-wait times out, the error now says the arming
+  rule may not hold on that firmware rather than just "timeout".
+- `0xff` from `finger_info` meaning an empty slot. On 1.8 it means empty, not
+  the stuck sensor the 0c4c source describes.
+
+**The 8 stage count** is borrowed from 0c4c. Nothing on this chip reports a
+stage count, so it is a guess that happens to work here. Override it:
+
+```bash
+sudo systemctl edit elanprintd     # Environment=ELANPRINT_ENROLL_STAGES=10
+```
+
+Accepted range 1 to 32, anything else falls back to 8. The value in use is
+logged at startup and again on every enrol, alongside the firmware version,
+so a wrong guess is diagnosable rather than a silent hang.
+
+**`wipe_all` has never been run.** `--wipe-device` implements it from the
+documented bytes and checks the count afterwards, but no one has watched it
+work on real hardware. Treat the first run as a test.
+
+**Other hardware.** A second 0c90 unit, a second firmware revision, and every
+non-Ubuntu distribution are all untested. So is `delete` under the current
+code, and `wipe_all` has never been sent at all.
+
+**Desktops other than GNOME.** Login works here because Ubuntu ships
+`/etc/pam.d/gdm-fingerprint`. KDE, Cinnamon and XFCE do not have that file,
+so enrol and verify would work but greeter login would need PAM configuration
+this project deliberately does not touch.
 
 ## Development
 

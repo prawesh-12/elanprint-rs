@@ -1148,7 +1148,69 @@ lockout risk in CLAUDE.md section 7 was never taken on.
   machine, because a re-claim by the same user re-arms, but a different user
   would get `Busy` until the daemon restarts.
 - The daemon holds USB interface 0 for its lifetime once claimed, so
-  `elanprint-cli` and `tools/run.sh` fail with "Device or resource busy" while
+  `elanprint-cli` and `tools/dev.sh` fail with "Device or resource busy" while
   the service is running.
 - `sudo` still uses `common-auth`, which `gdm-fingerprint` does not cover, so
   sudo does not take a fingerprint. Out of scope by the user's order.
+
+---
+
+## 2026-09-15 Any enrolled user could authenticate as any other
+
+Found by asking the question, not by a failing test. Every test in the suite
+passed before and after the bug existed, because none of them claimed as one
+user and answered with another user's slot.
+
+### The bug
+
+`pam_fprintd` sends the finger name `any`. In `verify_inner` that meant
+`wanted_slot = None`, and the id the chip returned was never compared against
+anything. `verify` (`40 ff 03`) carries no finger id, so the chip matches
+against every template in its flash and answers with whichever hit.
+
+Result: with the store holding `alice -> slot 0` and `bob -> slot 1`, a claim
+by `bob` answered `40 00`, alice's slot, and the daemon emitted
+`verify-match`. Alice's finger logged in as bob.
+
+Reproduced against the fake transport:
+
+```
+terminal: VerifyStatus { result: "verify-match", done: true }
+selected: [VerifyFingerSelected { finger: "any" }]
+```
+
+The second line is the tell. `finger_for_slot("bob", 0)` found no slot 0 for
+bob and fell back to the placeholder `"any"`. The daemon had the information
+that the matched slot was not bob's and discarded it.
+
+### Why `may_act` did not catch it
+
+`may_act` is an access-control check on the D-Bus caller, not on the match.
+It runs at `Claim` and asks whether the caller's uid may act on the named
+user's prints. During greeter login the caller is `gdm-session-worker`,
+running as **uid 0**, so it passes, correctly. It governs who may drive the
+device. It never sees the template id the chip returns.
+
+One thing did limit the blast radius: a user with no store entry at all is
+refused with `NoPrints` before any `verify` goes out. The attacker had to
+have at least one finger enrolled.
+
+### The fix
+
+The claim's own slots are now the allow list. For `any` that is every slot
+the store maps to the claiming user; for a named finger it is that one slot,
+as before. A returned id outside the set is `verify-no-match`, and no
+`VerifyFingerSelected` is emitted. The `"any"` placeholder in
+`finger_for_slot` is deleted, and the function with it: an unmapped slot is
+not a finger of this user, so there is no name to report.
+
+This does not make the host store authoritative over flash. It never drives
+an erase and never writes. It only narrows what authenticates, never widens
+it. An orphaned template that maps to nobody matching nobody is the correct
+outcome.
+
+### Consequence for uninstalling
+
+A template left in flash with no store entry now authenticates no one. Before
+the fix it authenticated any enrolled user, which made the orphaned-template
+case after an uninstall a live bypass rather than untidiness.

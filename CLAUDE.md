@@ -122,8 +122,8 @@ Before handing work back: `cargo build`, `cargo test`,
 - One consumer of the device at a time. Two concurrent operations desync the
   protocol and produce symptoms that look like firmware bugs.
 - The daemon holds USB interface 0 for its lifetime, so `elanprint-cli` and
-  `tools/run.sh` fail with "Device or resource busy" until the service stops.
-  Expected, not a regression.
+  `tools/dev.sh` fail with "Device or resource busy" until the service stops.
+  Expected, not a regression. `tools/dev.sh status` says which process has it.
 
 ---
 
@@ -135,7 +135,7 @@ whole integration. **No file under `/etc/pam.d` is edited or needs to be.**
 `sudo` by fingerprint would require `common-auth`, the one change that can lock
 the user out. Out of scope. Do not propose it as a fix for anything.
 
-`tools/uninstall-system.sh` reverts the install completely. Password login always
+`tools/uninstall.sh` reverts the install completely. Password login always
 works regardless.
 
 ---

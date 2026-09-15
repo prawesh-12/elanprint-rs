@@ -3,6 +3,10 @@ Description=ELAN fingerprint daemon
 After=dbus.service
 Requires=dbus.service
 
+# The daemon spawns /usr/bin/getent to resolve account names through NSS.
+# Sandboxing that blocks exec, dlopen of NSS modules, or uid mapping breaks
+# that lookup, and the failure looks like a permission bug on the auth path.
+# tests::the_unit_can_still_spawn_getent guards the directives that do it.
 [Service]
 Type=dbus
 BusName=net.reactivated.Fprint

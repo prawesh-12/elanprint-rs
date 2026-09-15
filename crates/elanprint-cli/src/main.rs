@@ -86,6 +86,11 @@ enum Action {
         #[arg(long)]
         slot: u8,
     },
+    /// Erase every template on the sensor. Cannot be undone.
+    ///
+    /// Asks for typed confirmation and refuses to run without a terminal, so
+    /// it can never happen unattended or from a script.
+    WipeDevice,
     /// Enroll one finger. Writes flash. Needs a touch per sample.
     Enroll {
         /// fprintd finger name, for the host store.
@@ -150,6 +155,9 @@ async fn main() -> Result<()> {
                 Box::pin(enroll(d, c, finger, slot, wait, hold_before_commit))
             })
             .await
+        }
+        Action::WipeDevice => {
+            session(&cancel, move |d, c| Box::pin(wipe_device(d, c))).await
         }
         Action::Sync { store, prune } => {
             session(&cancel, move |d, c| {
@@ -623,6 +631,57 @@ async fn drain_trailing(device: &Device, cancel: &CancellationToken) {
             println!("trailing: {} bytes: {}", data.len(), elanprint_usb::hex(&data));
         }
         Err(e) => println!("trailing: unreadable ({e})"),
+    }
+}
+
+/// Erase every template. `wipe_all` has never been run on this hardware.
+async fn wipe_device(device: &Device, cancel: &CancellationToken) -> Result<()> {
+    use std::io::{IsTerminal, Write};
+
+    if !std::io::stdin().is_terminal() {
+        bail!("wipe-device needs a terminal, it will not run unattended");
+    }
+
+    let (_, parsed) = send(device, Cmd::EnrolledNum, cancel).await?;
+    let before = match parsed {
+        Response::EnrolledNum { count } => count,
+        other => bail!("enrolled_num gave unexpected {other:?}"),
+    };
+    println!("the sensor holds {before} template(s)");
+    if before == 0 {
+        println!("nothing to erase");
+        return Ok(());
+    }
+    println!();
+    println!("This erases every template in the sensor's flash. There is no undo,");
+    println!("and no backup exists anywhere: templates never leave the chip.");
+    println!();
+    println!("wipe_all (40 ff 99) is documented but has never been run on this");
+    println!("hardware. It answers nothing, so the result is checked by reading");
+    println!("the count afterwards.");
+    println!();
+    print!("Type ERASE to continue: ");
+    std::io::stdout().flush()?;
+    let mut typed = String::new();
+    std::io::stdin().read_line(&mut typed)?;
+    if typed.trim() != "ERASE" {
+        bail!("not confirmed, nothing was sent");
+    }
+
+    println!("sending wipe_all ...");
+    send(device, Cmd::WipeAll, cancel).await?;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    let (_, parsed) = send(device, Cmd::EnrolledNum, cancel).await?;
+    match parsed {
+        Response::EnrolledNum { count: 0 } => {
+            println!("done, the sensor reports 0 templates");
+            Ok(())
+        }
+        Response::EnrolledNum { count } => {
+            bail!("the sensor still reports {count} template(s), erase did not complete")
+        }
+        other => bail!("enrolled_num gave unexpected {other:?}"),
     }
 }
 

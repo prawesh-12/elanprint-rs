@@ -27,8 +27,25 @@ impl ReplyEndpoint {
     }
 }
 
-/// borrowed count, unconfirmed on 0c90
-pub const TOTAL_ENROLL_ATTEMPTS: u8 = 8;
+/// Borrowed from 0c4c. Nothing on 0c90 reports a stage count.
+///
+/// `ELANPRINT_ENROLL_STAGES` overrides it. A wrong value shows up as an
+/// enrol that never reaches commit.
+pub const DEFAULT_ENROLL_STAGES: u8 = 8;
+
+/// Prefer [`DEFAULT_ENROLL_STAGES`].
+pub const TOTAL_ENROLL_ATTEMPTS: u8 = DEFAULT_ENROLL_STAGES;
+
+/// Clamped to 1..=32, anything else falls back to the default.
+pub fn enroll_stages() -> u8 {
+    match std::env::var("ELANPRINT_ENROLL_STAGES") {
+        Ok(raw) => match raw.trim().parse::<u8>() {
+            Ok(n) if (1..=32).contains(&n) => n,
+            _ => DEFAULT_ENROLL_STAGES,
+        },
+        Err(_) => DEFAULT_ENROLL_STAGES,
+    }
+}
 
 /// sub id byte for commit
 pub fn sub_id(finger_id: u8) -> u8 {

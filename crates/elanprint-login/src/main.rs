@@ -11,6 +11,7 @@ mod client;
 mod copy;
 mod fx;
 mod icon;
+mod sensor;
 
 use app::LoginApp;
 
@@ -26,11 +27,14 @@ fn main() -> Result<()> {
     let _guard = runtime.enter();
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([420.0, 560.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([400.0, 600.0])
+            .with_resizable(false)
+            .with_maximize_button(false),
         ..Default::default()
     };
     let run = eframe::run_native(
-        "elanprint login",
+        copy::TITLE,
         options,
         Box::new(move |_cc| Ok(Box::new(LoginApp::new(handle)) as Box<dyn eframe::App>)),
     );

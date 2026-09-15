@@ -16,8 +16,6 @@ pub struct Fx {
     flash_at: Option<std::time::Instant>,
     flash_color: egui::Color32,
     shake_at: Option<std::time::Instant>,
-    ripple_at: Option<std::time::Instant>,
-    sweep_from: Option<std::time::Instant>,
 }
 
 impl Fx {
@@ -28,36 +26,7 @@ impl Fx {
             flash_at: None,
             flash_color: egui::Color32::TRANSPARENT,
             shake_at: None,
-            ripple_at: None,
-            sweep_from: None,
         }
-    }
-
-    /// One expanding ring, 600 ms. Fired on every reply the chip sends.
-    pub fn ripple(&mut self) {
-        self.ripple_at = Some(std::time::Instant::now());
-    }
-
-    /// Ring progress 0 to 1, if one is running.
-    pub fn ripple_now(&self, now: std::time::Instant) -> Option<f32> {
-        let at = self.ripple_at?;
-        let t = now.saturating_duration_since(at).as_secs_f32() / 0.6;
-        (t < 1.0).then_some(t)
-    }
-
-    pub fn set_sweep(&mut self, on: bool) {
-        match (on, self.sweep_from) {
-            (true, None) => self.sweep_from = Some(std::time::Instant::now()),
-            (false, _) => self.sweep_from = None,
-            _ => {}
-        }
-    }
-
-    /// Band position 0 to 1, if the sweep is running.
-    pub fn sweep_now(&self, now: std::time::Instant) -> Option<f32> {
-        let from = self.sweep_from?;
-        let t = now.saturating_duration_since(from).as_secs_f32();
-        Some((t / 1.9).fract())
     }
 
     /// Restarts the phase.
@@ -110,10 +79,7 @@ impl Fx {
     }
 
     pub fn fast_animating(&self, now: std::time::Instant) -> bool {
-        if self.flash_now(now).is_some() || self.ripple_now(now).is_some() {
-            return true;
-        }
-        if self.sweep_from.is_some() {
+        if self.flash_now(now).is_some() {
             return true;
         }
         self.shake_at.is_some_and(|at| {

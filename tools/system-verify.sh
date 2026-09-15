@@ -1,10 +1,5 @@
 #!/bin/sh
-# One verify against the installed system daemon. Read only.
-#
-# Usage: system-verify.sh FINGER TAG
-# Starts a signal monitor and a capture, claims, then starts the verify and
-# returns. Read /tmp/sysverify-TAG.log only after the user confirms the
-# touch, per D-011.
+# Read only. Read the log only after the user confirms the touch.
 set -e
 cd "$(dirname "$0")/.."
 FINGER="$1"
@@ -15,12 +10,17 @@ mkdir -p captures
 D=/net/reactivated/Fprint/Device/0
 I=net.reactivated.Fprint.Device
 
-dumpcap -i usbmon1 -s 160 -w "captures/sysverify-$TAG.pcapng" -q >/dev/null 2>&1 &
+# bus and device change on every replug
+. "$(dirname "$0")/usb-locate.sh"
+elanprint_locate || exit 1
+echo "sensor on bus $ELANPRINT_BUS device $ELANPRINT_DEV, capturing $ELANPRINT_USBMON"
+echo "$ELANPRINT_BUS $ELANPRINT_DEV" > "captures/sysverify-$TAG.where"
+
+dumpcap -i "$ELANPRINT_USBMON" -s 160 -w "captures/sysverify-$TAG.pcapng" -q >/dev/null 2>&1 &
 echo "$!" > "/tmp/sysverify-$TAG.cap.pid"
 sleep 2
 
-# gdbus uses AddMatch, which a normal user may do. busctl monitor needs
-# BecomeMonitor, which is root only on the system bus.
+# gdbus uses AddMatch; busctl monitor needs BecomeMonitor, root only
 gdbus monitor --system --dest net.reactivated.Fprint \
   > "/tmp/sysverify-$TAG.log" 2>&1 &
 echo "$!" > "/tmp/sysverify-$TAG.mon.pid"

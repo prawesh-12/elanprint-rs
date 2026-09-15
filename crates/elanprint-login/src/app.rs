@@ -1,7 +1,7 @@
 //! Fingerprint enrolment window over the daemon.
 //!
-//! Three fixed regions: header, stage, controls. The stage owns the one
-//! status line. Verify is a self-test; real login is handled by PAM.
+//! The stage owns the one status line. Verify is a self-test; real login is
+//! handled by PAM.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -14,6 +14,17 @@ use crate::client::{AuthEvent, EnrollEvent, FingerprintClient};
 use crate::copy;
 use crate::fx::{Fx, Pulse};
 use crate::icon;
+use crate::sensor::{self, Found};
+
+/// One spacing unit. Every gap below is a multiple of it.
+const U: f32 = 8.0;
+/// Content column, centred in the window.
+const COL: f32 = 320.0;
+
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(58, 125, 233);
+const GOOD: egui::Color32 = egui::Color32::from_rgb(64, 190, 120);
+const WARN: egui::Color32 = egui::Color32::from_rgb(232, 165, 42);
+const BAD: egui::Color32 = egui::Color32::from_rgb(226, 86, 86);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Screen {
@@ -44,6 +55,16 @@ const ENROLL_FINGERS: [&str; 10] = [
 enum Mode {
     Verify,
     Enroll,
+}
+
+/// What the mark and the status line are saying right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Dim,
+    Neutral,
+    Retry,
+    Good,
+    Bad,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,10 +101,11 @@ pub struct LoginApp {
     delete_armed: Option<String>,
     delete_pending: bool,
     list_pending: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
+    sensor: Found,
 }
 
 impl LoginApp {
-    /// Window with the current unix user prefilled.
+    /// The unix user comes from the process, never from the window.
     pub fn new(handle: Handle) -> Self {
         let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
         Self {
@@ -106,10 +128,50 @@ impl LoginApp {
             enroll_status: String::new(),
             enroll_tone: EnrollTone::Idle,
             enroll_done: 0,
-            enroll_total: 8,
+            enroll_total: 0,
             delete_armed: None,
             delete_pending: false,
             list_pending: None,
+            sensor: sensor::scan(),
+        }
+    }
+
+    fn tone(&self) -> Tone {
+        match self.mode {
+            Mode::Verify => match self.screen {
+                Screen::Disconnected => Tone::Dim,
+                Screen::Granted => Tone::Good,
+                Screen::Denied | Screen::Locked | Screen::Failed => Tone::Bad,
+                _ => Tone::Neutral,
+            },
+            Mode::Enroll => {
+                if self.client.is_none() {
+                    return Tone::Dim;
+                }
+                match self.enroll_tone {
+                    EnrollTone::Hint => Tone::Retry,
+                    EnrollTone::Done => Tone::Good,
+                    EnrollTone::Error => Tone::Bad,
+                    EnrollTone::Idle => Tone::Neutral,
+                }
+            }
+        }
+    }
+
+    /// `Some(true)` draws the check, `Some(false)` the cross.
+    fn outcome(&self) -> Option<bool> {
+        match self.mode {
+            Mode::Verify => match self.screen {
+                Screen::Granted => Some(true),
+                Screen::Denied => Some(false),
+                _ => None,
+            },
+            Mode::Enroll if self.enroll_events.is_none() => match self.enroll_tone {
+                EnrollTone::Done => Some(true),
+                EnrollTone::Error => Some(false),
+                _ => None,
+            },
+            Mode::Enroll => None,
         }
     }
 
@@ -208,7 +270,8 @@ impl LoginApp {
             cancel.cancel();
         }
         self.enroll_events = None;
-        self.enroll_status = "cancelled".to_string();
+        self.enroll_done = 0;
+        self.enroll_status = copy::PICK_ENROLL.to_string();
         self.enroll_tone = EnrollTone::Idle;
     }
 
@@ -296,14 +359,14 @@ impl LoginApp {
                     AuthEvent::Prompt(text) => self.status = text,
                     AuthEvent::Retry(hint) => {
                         self.status = hint;
-                        self.fx.ripple();
+                        self.fx.flash(WARN);
                     }
                     AuthEvent::Finger(finger) => {
                         self.status = format!("verifying {finger}");
                     }
                     AuthEvent::Granted => {
                         self.screen = Screen::Granted;
-                        self.fx.ripple();
+                        self.fx.flash(GOOD);
                         done = true;
                     }
                     AuthEvent::Denied(_) => {
@@ -348,25 +411,25 @@ impl LoginApp {
                             self.enroll_total,
                         );
                         self.enroll_tone = EnrollTone::Idle;
-                        self.fx.ripple();
+                        self.fx.flash(ACCENT);
                     }
                     EnrollEvent::Retry(hint) => {
                         self.enroll_status = hint;
                         self.enroll_tone = EnrollTone::Hint;
-                        self.fx.ripple();
+                        self.fx.flash(WARN);
                     }
                     EnrollEvent::Completed => {
                         self.enroll_done = self.enroll_total;
                         self.enroll_status = format!("{} enrolled", self.enroll_finger);
                         self.enroll_tone = EnrollTone::Done;
-                        self.fx.ripple();
+                        self.fx.flash(GOOD);
                         done = true;
                         need_refresh = true;
                     }
                     EnrollEvent::Failed(text) => {
                         self.enroll_status = text;
                         self.enroll_tone = EnrollTone::Error;
-                        self.fx.flash(egui::Color32::RED);
+                        self.fx.flash(BAD);
                         self.fx.shake();
                         done = true;
                     }
@@ -415,18 +478,27 @@ impl eframe::App for LoginApp {
             self.fx.set_pulse(want);
             self.pulse = want;
         }
-        self.fx.set_sweep(active);
         let now = Instant::now();
+        if self.client.is_some() {
+            egui::TopBottomPanel::bottom("sensor_info")
+                .show_separator_line(false)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.set_max_width(COL);
+                        ui.add_space(U * 0.5);
+                        sensor_info(ui, self);
+                        ui.add_space(U * 0.5);
+                    });
+                });
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                ui.set_max_width(380.0);
-                ui.add_space(14.0);
+                ui.set_max_width(COL);
+                ui.add_space(U);
                 header(ui, self);
-                ui.add_space(10.0);
+                ui.add_space(U * 2.0);
                 stage(ui, self, now);
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
+                ui.add_space(U * 2.0);
                 controls(ui, self, ctx);
             });
         });
@@ -438,27 +510,27 @@ impl eframe::App for LoginApp {
     }
 }
 
-/// Larger type, roomier controls, rounded widgets.
+/// The status line leads. Everything else sits a size below it.
 fn polish(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.text_styles.insert(
         egui::TextStyle::Heading,
-        egui::FontId::new(28.0, egui::FontFamily::Proportional),
+        egui::FontId::new(13.0, egui::FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Body,
-        egui::FontId::new(17.0, egui::FontFamily::Proportional),
+        egui::FontId::new(14.0, egui::FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Button,
-        egui::FontId::new(17.0, egui::FontFamily::Proportional),
+        egui::FontId::new(14.0, egui::FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Small,
-        egui::FontId::new(13.5, egui::FontFamily::Proportional),
+        egui::FontId::new(12.0, egui::FontFamily::Proportional),
     );
-    style.spacing.item_spacing = egui::vec2(10.0, 10.0);
-    style.spacing.button_padding = egui::vec2(16.0, 10.0);
+    style.spacing.item_spacing = egui::vec2(U, U);
+    style.spacing.button_padding = egui::vec2(U * 1.5, U);
     style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
     style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
     style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(8);
@@ -466,136 +538,150 @@ fn polish(ctx: &egui::Context) {
 }
 
 fn header(ui: &mut egui::Ui, app: &LoginApp) {
+    let (colour, text) = if app.client.is_some() {
+        (GOOD, copy::CONNECTED)
+    } else {
+        (ui.visuals().weak_text_color(), copy::NOT_CONNECTED)
+    };
     ui.vertical_centered(|ui| {
-        ui.heading(copy::TITLE);
-        let connected = app.client.is_some();
-        let (dot, text) = if connected {
-            (egui::Color32::GREEN, copy::CONNECTED)
-        } else {
-            (egui::Color32::GRAY, copy::NOT_CONNECTED)
-        };
-        ui.horizontal(|ui| {
-            dot_mark(ui, dot, 5.0);
-            ui.label(egui::RichText::new(text).small().weak());
-        });
+        ui.label(egui::RichText::new(text).size(12.0).color(colour));
+        if app.client.is_some() {
+            ui.add_space(U * 0.25);
+            ui.label(egui::RichText::new(&app.user).size(12.0).weak());
+        }
     });
 }
 
-/// The fingerprint mark, the progress ring and the one status line.
-///
-/// A ridge lights per accepted sample, a ripple fires on every chip reply,
-/// a scan band runs while a touch is due.
+/// Mark, status line, dots. One centred column, nothing else moves.
 fn stage(ui: &mut egui::Ui, app: &LoginApp, now: Instant) {
     let dimmed = match app.mode {
         Mode::Verify => matches!(app.screen, Screen::Disconnected | Screen::Locked),
         Mode::Enroll => app.client.is_none(),
     };
-    let waiting = match app.mode {
-        Mode::Verify => app.events.is_some(),
-        Mode::Enroll => app.enroll_events.is_some(),
-    };
-    let good = egui::Color32::from_rgb(64, 200, 122);
-    let warn = egui::Color32::from_rgb(255, 191, 0);
-    let bad = egui::Color32::from_rgb(232, 86, 86);
-
-    let base = if dimmed {
-        ui.visuals().weak_text_color()
-    } else {
-        ui.visuals().strong_text_color()
-    };
-    let accent = match app.mode {
-        Mode::Verify => match app.screen {
-            Screen::Granted => good,
-            Screen::Denied | Screen::Locked => bad,
-            _ => ui.visuals().hyperlink_color,
-        },
-        Mode::Enroll => match app.enroll_tone {
-            EnrollTone::Done => good,
-            EnrollTone::Error => bad,
-            EnrollTone::Hint => warn,
-            EnrollTone::Idle => ui.visuals().hyperlink_color,
-        },
-    };
-
-    let outcome = match app.mode {
-        Mode::Verify => match app.screen {
-            Screen::Granted => Some(true),
-            Screen::Denied => Some(false),
-            _ => None,
-        },
-        Mode::Enroll if app.enroll_events.is_none() => match app.enroll_tone {
-            EnrollTone::Done => Some(true),
-            EnrollTone::Error => Some(false),
-            _ => None,
-        },
-        Mode::Enroll => None,
-    };
-
+    let tone = app.tone();
+    let outcome = app.outcome();
     let (done, total) = match app.mode {
         Mode::Enroll => (app.enroll_done, app.enroll_total.max(1)),
         Mode::Verify => (0, 1),
     };
 
+    // the mark's colour is its state, so no second accent element is needed
+    let colour = match tone {
+        Tone::Dim => ui.visuals().weak_text_color(),
+        Tone::Neutral => ui.visuals().text_color(),
+        Tone::Retry => WARN,
+        Tone::Good => GOOD,
+        Tone::Bad => BAD,
+    };
+    let colour = app.fx.flash_now(now).unwrap_or(colour);
+
     let dx = app.fx.shake_dx(now);
-    let size = 148.0;
+    let size = 84.0;
     ui.vertical_centered(|ui| {
-        ui.horizontal(|ui| {
-            ui.add_space(dx);
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-            let inner = rect.shrink(size * 0.13);
-            if app.mode == Mode::Enroll && app.client.is_some() {
-                icon::ring(
-                    ui,
-                    rect.shrink(size * 0.03),
-                    done,
-                    total,
-                    ui.visuals().weak_text_color().gamma_multiply(0.35),
-                    accent,
-                );
+        let (slot, _) =
+            ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+        let rect = slot.translate(egui::vec2(dx, 0.0));
+        match outcome {
+            Some(true) => icon::check(ui, rect.shrink(size * 0.22), GOOD),
+            Some(false) => icon::cross(ui, rect.shrink(size * 0.24), BAD),
+            None => {
+                let mut m = icon::Mark::new(size, colour);
+                m.alpha = if dimmed { 0.45 } else { app.fx.pulse_alpha(now) };
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                let _ = icon::mark(&mut child, &m);
             }
-            match outcome {
-                Some(true) => icon::check(ui, inner, good),
-                Some(false) => icon::cross(ui, inner, bad),
-                None => {
-                    let mut mark = icon::Mark::new(inner.width(), base, accent);
-                    mark.lit = done.min(total);
-                    mark.total = total;
-                    mark.alpha = if dimmed {
-                        0.5
-                    } else {
-                        app.fx.pulse_alpha(now)
-                    };
-                    mark.ripple = app.fx.ripple_now(now);
-                    mark.sweep = if waiting { app.fx.sweep_now(now) } else { None };
-                    draw_mark_at(ui, inner, &mark);
-                }
-            }
-        });
-        ui.add_space(4.0);
+        }
+
+        ui.add_space(U * 2.0);
         ui.label(
             egui::RichText::new(stage_line(app))
-                .size(19.0)
-                .color(match app.enroll_tone {
-                    EnrollTone::Error if app.mode == Mode::Enroll => bad,
-                    EnrollTone::Hint if app.mode == Mode::Enroll => warn,
-                    _ => ui.visuals().text_color(),
+                .size(20.0)
+                .color(match tone {
+                    Tone::Retry => WARN,
+                    Tone::Good => GOOD,
+                    Tone::Bad => BAD,
+                    Tone::Dim => ui.visuals().weak_text_color(),
+                    Tone::Neutral => ui.visuals().text_color(),
                 }),
         );
+
+        ui.add_space(U);
         if app.mode == Mode::Enroll && app.client.is_some() && total > 1 {
-            ui.label(
-                egui::RichText::new(format!("{done} of {total} touches"))
-                    .small()
-                    .weak(),
-            );
             dots(ui, done, total);
+        } else {
+            ui.allocate_exact_size(egui::vec2(0.0, U), egui::Sense::hover());
+        }
+
+        if app.client.is_none() {
+            ui.add_space(U * 1.5);
+            sensor_identity(ui, &app.sensor);
         }
     });
 }
 
-fn draw_mark_at(ui: &mut egui::Ui, rect: egui::Rect, mark: &icon::Mark) {
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-    let _ = icon::fingerprint(&mut child, mark);
+/// Name the hardware. Without a daemon this is all the window can say.
+fn sensor_identity(ui: &mut egui::Ui, found: &Found) {
+    match found {
+        Found::Supported(s) => {
+            ui.label(egui::RichText::new(s.title()).size(13.0));
+            ui.label(egui::RichText::new(s.address()).size(12.0).weak());
+        }
+        Found::Unsupported(s) => {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Found ELAN {}, which this driver does not support.",
+                    s.ids()
+                ))
+                .size(13.0)
+                .color(WARN),
+            );
+            ui.label(
+                egui::RichText::new("Only 04f3:0c90 is supported.")
+                    .size(12.0)
+                    .weak(),
+            );
+        }
+        Found::None => {
+            ui.label(
+                egui::RichText::new("No ELAN fingerprint sensor on this machine.")
+                    .size(12.0)
+                    .weak(),
+            );
+        }
+    }
+}
+
+/// Collapsed by default: the name is the useful part, the rest is detail.
+fn sensor_info(ui: &mut egui::Ui, app: &LoginApp) {
+    let Found::Supported(s) = &app.sensor else {
+        return;
+    };
+    egui::CollapsingHeader::new(egui::RichText::new("Sensor info").size(12.0).weak())
+        .id_salt("sensor_info")
+        .default_open(false)
+        .show(ui, |ui| {
+            // the window cannot grow, so expanding must not push the button out
+            ui.spacing_mut().item_spacing.y = 1.0;
+            let templates = app.fingers.iter().filter(|f| f.as_str() != "any").count();
+            let stages = if app.enroll_total > 0 {
+                app.enroll_total.to_string()
+            } else {
+                "unknown until claimed".to_string()
+            };
+            for (k, v) in [
+                ("Device", s.title()),
+                ("Firmware", s.firmware.clone().unwrap_or_else(|| "unknown".into())),
+                ("Enrol stages", stages),
+                ("Templates enrolled", templates.to_string()),
+            ] {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(k).size(12.0).weak());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(v).size(12.0));
+                    });
+                });
+            }
+        });
 }
 
 fn stage_line(app: &LoginApp) -> String {
@@ -623,28 +709,22 @@ fn stage_line(app: &LoginApp) -> String {
 
 fn dots(ui: &mut egui::Ui, done: u8, total: u8) {
     ui.horizontal(|ui| {
-        let mut i = 0;
-        while i < total {
-            let color = if i < done {
-                egui::Color32::GREEN
+        ui.spacing_mut().item_spacing.x = U * 0.75;
+        for i in 0..total {
+            let colour = if i < done {
+                ACCENT
             } else {
-                ui.visuals().weak_text_color()
+                ui.visuals().weak_text_color().gamma_multiply(0.4)
             };
-            dot_mark(ui, color, 4.0);
-            i += 1;
+            dot_mark(ui, colour, 4.0);
         }
     });
 }
 
 fn controls(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
     let locked = app.events.is_some() || app.enroll_events.is_some();
-    ui.horizontal(|ui| {
-        ui.add_enabled_ui(!locked, |ui| {
-            ui.selectable_value(&mut app.mode, Mode::Verify, "Verify");
-            ui.selectable_value(&mut app.mode, Mode::Enroll, "Enroll");
-        });
-    });
-    ui.add_space(4.0);
+    segmented(ui, &mut app.mode, !locked);
+    ui.add_space(U * 2.0);
     if app.mode == Mode::Verify {
         verify_controls(ui, app);
     } else {
@@ -655,30 +735,17 @@ fn controls(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
 fn verify_controls(ui: &mut egui::Ui, app: &mut LoginApp) {
     let editing = matches!(app.screen, Screen::Disconnected | Screen::Ready);
     let armed = matches!(app.screen, Screen::Ready);
-    ui.horizontal(|ui| {
-        ui.label("user");
-        ui.add_enabled(
-            editing,
-            egui::TextEdit::singleline(&mut app.user).desired_width(220.0),
-        );
+
+    // The daemon refuses any uid but the caller's, so a typed name could only
+    // produce a confusing failure. The process knows who it is.
+    let known = app.fingers.clone();
+    labelled_combo(ui, "Finger", "finger", &mut app.finger, editing, |ui, current| {
+        for name in known.clone() {
+            ui.selectable_value(current, name.clone(), copy::finger_label(&name));
+        }
     });
-    ui.horizontal(|ui| {
-        ui.label("finger");
-        ui.add_enabled_ui(editing, |ui| {
-            egui::ComboBox::from_id_salt("finger")
-                .selected_text(app.finger.clone())
-                .width(220.0)
-                .show_ui(ui, |ui| {
-                    for name in app.fingers.clone() {
-                        ui.selectable_value(&mut app.finger, name.clone(), name);
-                    }
-                });
-        });
-    });
-    if app.fingers.len() == 1 && app.fingers.first().is_some_and(|f| f == "any") {
-        ui.label(egui::RichText::new(copy::NO_FINGERS).small().weak());
-    }
-    ui.add_space(6.0);
+    ui.add_space(U * 3.0);
+
     match app.screen {
         Screen::Waiting => {
             if full_button(ui, copy::CANCEL).clicked() {
@@ -695,29 +762,37 @@ fn verify_controls(ui: &mut egui::Ui, app: &mut LoginApp) {
                 app.screen,
                 Screen::Denied | Screen::Failed | Screen::Locked
             );
-            ui.add_enabled_ui(armed || retry, |ui| {
-                let label = if retry { copy::TRY_AGAIN } else { copy::LOGIN };
-                if full_button(ui, label).clicked() {
-                    app.start_login();
-                }
-            });
-            if matches!(app.screen, Screen::Locked | Screen::Failed) {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(copy::PASSWORD_FALLBACK)
-                        .small()
-                        .weak(),
-                );
+            let label = if retry {
+                copy::TRY_AGAIN
+            } else {
+                copy::VERIFY_ACTION
+            };
+            if primary_button(ui, label, armed || retry).clicked() {
+                app.start_login();
             }
         }
     }
-    ui.add_space(6.0);
-    ui.label(egui::RichText::new(copy::SELF_TEST).small().weak());
+
+    ui.add_space(U * 1.5);
+    ui.label(egui::RichText::new(copy::SELF_TEST).size(12.0).weak());
+
+    if app.fingers.len() == 1 && app.fingers.first().is_some_and(|f| f == "any") {
+        ui.add_space(U);
+        ui.label(egui::RichText::new(copy::NO_FINGERS).size(12.0).weak());
+    }
+    if matches!(app.screen, Screen::Locked | Screen::Failed) {
+        ui.add_space(U);
+        ui.label(
+            egui::RichText::new(copy::PASSWORD_FALLBACK)
+                .size(12.0)
+                .weak(),
+        );
+    }
 }
 
 fn enroll_controls(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
     if app.client.is_none() {
-        if full_button(ui, copy::CONNECT).clicked() {
+        if primary_button(ui, copy::CONNECT, true).clicked() {
             app.connect(ctx);
         }
         if app.pending.is_some() {
@@ -726,39 +801,35 @@ fn enroll_controls(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
         return;
     }
     let busy = app.enroll_events.is_some() || app.delete_pending;
-    ui.horizontal(|ui| {
-        ui.label("finger");
-        ui.add_enabled_ui(!busy, |ui| {
-            egui::ComboBox::from_id_salt("enroll_finger")
-                .selected_text(app.enroll_finger.clone())
-                .width(220.0)
-                .show_ui(ui, |ui| {
-                    for name in ENROLL_FINGERS {
-                        if app.fingers.iter().any(|f| f == name) {
-                            ui.add_enabled_ui(false, |ui| {
-                                ui.label(format!("{name} (enrolled)"));
-                            });
-                        } else {
-                            ui.selectable_value(&mut app.enroll_finger, name.to_string(), name);
-                        }
-                    }
-                });
-        });
-    });
-    ui.add_space(6.0);
+    let enrolled = app.fingers.clone();
+    labelled_combo(
+        ui,
+        "Finger",
+        "enroll_finger",
+        &mut app.enroll_finger,
+        !busy,
+        |ui, current| {
+            for name in ENROLL_FINGERS {
+                if enrolled.iter().any(|f| f == name) {
+                    ui.add_enabled_ui(false, |ui| {
+                        ui.label(format!("{name} (enrolled)"));
+                    });
+                } else {
+                    ui.selectable_value(current, name.to_string(), name);
+                }
+            }
+        },
+    );
+    ui.add_space(U * 3.0);
     if app.enroll_events.is_some() {
         if full_button(ui, copy::CANCEL_ENROLL).clicked() {
             app.cancel_enroll();
         }
-    } else {
-        ui.add_enabled_ui(!app.delete_pending, |ui| {
-            if full_button(ui, copy::START_ENROLL).clicked() {
-                app.start_enroll();
-            }
-        });
+    } else if primary_button(ui, copy::START_ENROLL, !app.delete_pending).clicked() {
+        app.start_enroll();
     }
-    ui.add_space(6.0);
-    ui.label(copy::ENROLLED_LIST);
+    ui.add_space(U * 1.5);
+    ui.label(egui::RichText::new(copy::ENROLLED_LIST).size(12.0).weak());
     let listed: Vec<String> = app
         .fingers
         .iter()
@@ -766,27 +837,96 @@ fn enroll_controls(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
         .cloned()
         .collect();
     if listed.is_empty() {
-        ui.label(egui::RichText::new(copy::NO_FINGERS).small().weak());
+        ui.label(egui::RichText::new(copy::NO_FINGERS).size(12.0).weak());
+        return;
     }
-    for name in listed {
-        ui.horizontal(|ui| {
-            ui.label(&name);
-            let armed = app.delete_armed.as_ref() == Some(&name);
-            let label = if armed {
-                copy::CONFIRM_DELETE
-            } else {
-                copy::DELETE
-            };
-            ui.add_enabled_ui(!busy, |ui| {
-                if ui.button(label).clicked() {
-                    app.request_delete(name.clone());
-                }
-            });
+    let room = (ui.available_height() - U).max(0.0);
+    egui::ScrollArea::vertical()
+        .max_height(room)
+        .show(ui, |ui| {
+            for name in listed {
+                ui.horizontal(|ui| {
+                    ui.set_width(COL);
+                    ui.label(&name);
+                    let armed = app.delete_armed.as_ref() == Some(&name);
+                    let label = if armed {
+                        copy::CONFIRM_DELETE
+                    } else {
+                        copy::DELETE
+                    };
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_enabled_ui(!busy, |ui| {
+                            if ui.button(label).clicked() {
+                                app.request_delete(name.clone());
+                            }
+                        });
+                    });
+                });
+            }
         });
-    }
 }
 
-/// Filled status dot. Drawn, not a glyph: the default font lacks it.
+/// Two segments, equal treatment, active one filled.
+fn segmented(ui: &mut egui::Ui, mode: &mut Mode, enabled: bool) {
+    let seg = (COL - U) / 2.0;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = U;
+        for (m, label) in [(Mode::Verify, "Verify"), (Mode::Enroll, "Enrol")] {
+            let active = *mode == m;
+            let text = if active {
+                egui::RichText::new(label).color(ui.visuals().strong_text_color())
+            } else {
+                egui::RichText::new(label).color(ui.visuals().weak_text_color())
+            };
+            let fill = if active {
+                ACCENT.gamma_multiply(0.22)
+            } else {
+                ui.visuals().widgets.inactive.bg_fill.gamma_multiply(0.5)
+            };
+            let button = egui::Button::new(text)
+                .fill(fill)
+                .min_size(egui::vec2(seg, U * 4.5));
+            if ui.add_enabled(enabled, button).clicked() {
+                *mode = m;
+            }
+        }
+    });
+}
+
+/// The one accent-filled action. Inputs stay neutral.
+fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
+    let button = egui::Button::new(
+        egui::RichText::new(text).color(egui::Color32::WHITE).strong(),
+    )
+    .fill(ACCENT)
+    .min_size(egui::vec2(COL, U * 5.5));
+    ui.add_enabled(enabled, button)
+}
+
+/// Label above, left aligned, control the same width as the button.
+fn labelled_combo(
+    ui: &mut egui::Ui,
+    label: &str,
+    id: &str,
+    current: &mut String,
+    enabled: bool,
+    options: impl Fn(&mut egui::Ui, &mut String),
+) {
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(label).size(12.0).weak());
+        });
+        ui.add_space(U * 0.25);
+        ui.add_enabled_ui(enabled, |ui| {
+            egui::ComboBox::from_id_salt(id)
+                .selected_text(copy::finger_label(current))
+                .width(COL)
+                .show_ui(ui, |ui| options(ui, current));
+        });
+    });
+}
+
+/// Drawn, not a glyph: the default font lacks a filled dot.
 fn dot_mark(ui: &mut egui::Ui, color: egui::Color32, radius: f32) {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(radius * 2.0, radius * 2.0),
@@ -795,9 +935,10 @@ fn dot_mark(ui: &mut egui::Ui, color: egui::Color32, radius: f32) {
     ui.painter().circle_filled(rect.center(), radius, color);
 }
 
+/// Neutral full-width action, for anything that is not the primary one.
 fn full_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add_sized(
-        egui::vec2(ui.available_width(), 44.0),
-        egui::Button::new(egui::RichText::new(text).strong()),
+        egui::vec2(COL, U * 5.5),
+        egui::Button::new(egui::RichText::new(text)),
     )
 }

@@ -7,6 +7,7 @@
 //! [`DeleteIntent`], which nothing derived from the store can build. The
 //! host file cannot drive a flash erase.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -244,6 +245,7 @@ pub struct Worker<T: Transport> {
     armed: bool,
     store_path: PathBuf,
     state: Arc<OpState>,
+    firmware: Option<(u8, u8)>,
 }
 
 impl<T: Transport> Worker<T> {
@@ -254,6 +256,7 @@ impl<T: Transport> Worker<T> {
             armed: false,
             store_path,
             state: Arc::new(OpState::default()),
+            firmware: None,
         }
     }
 
@@ -283,15 +286,46 @@ impl<T: Transport> Worker<T> {
             let usb = T::open().await?;
             self.usb = Some(usb);
         }
-        self.send_arm().await?;
+        // once per handle, so later claims send only the arming read
+        if self.firmware.is_none() {
+            match self.read_firmware().await {
+                Some((major, minor)) => {
+                    self.firmware = Some((major, minor));
+                    tracing::info!("sensor firmware {major}.{minor}");
+                }
+                None => tracing::warn!("firmware version unreadable"),
+            }
+        }
+        let count = self.send_arm().await?;
         self.armed = true;
+        tracing::debug!("claim armed, {count} enrolled");
         self.state.set_claimed_user(Some(user.clone()));
         self.claimed = Some(user);
         self.state.claimed.store(true, Ordering::Release);
         Ok(())
     }
 
-    /// Send `enrolled_num` on the held handle. Read only.
+    async fn read_firmware(&self) -> Option<(u8, u8)> {
+        let usb = self.usb().ok()?;
+        let cancel = CancellationToken::new();
+        let cmd = Command::FwVersion;
+        let raw = usb
+            .cmd(
+                &cmd.encode(),
+                EndpointIn::Status,
+                cmd.expected_len(),
+                cmd.timeout(),
+                &cancel,
+            )
+            .await
+            .ok()?;
+        match Response::parse(&cmd, &raw) {
+            Ok(Response::FwVersion { major, minor }) => Some((major, minor)),
+            _ => None,
+        }
+    }
+
+    /// Arming is an `enrolled_num` read. Nothing else counts as armed.
     async fn send_arm(&self) -> Result<u8, WorkerError> {
         let usb = self.usb()?;
         let cancel = CancellationToken::new();
@@ -440,23 +474,20 @@ impl<T: Transport> Worker<T> {
         if finger != "any" && !elanprint_store::is_valid_finger(finger) {
             return Err(WorkerError::BadFinger(finger.to_string()));
         }
-        // verify (40 ff 03) carries no finger id, the chip returns
-        // whichever template hit, so a named finger must be checked
-        let wanted_slot = {
+        // verify (40 ff 03) carries no finger id: the chip matches against
+        // every template it holds, including other users' and orphans left in
+        // flash. Only slots this claim owns may authenticate it.
+        let allowed: BTreeMap<u8, String> = {
             let store = Store::open(&self.store_path)?;
-            let has = store
-                .prints()
-                .get(&user)
-                .map(|f| !f.is_empty())
-                .unwrap_or(false);
-            if !has {
-                return Err(WorkerError::NoPrints(user));
-            }
+            let mine = match store.prints().get(&user) {
+                Some(f) if !f.is_empty() => f.clone(),
+                _ => return Err(WorkerError::NoPrints(user)),
+            };
             if finger == "any" {
-                None
+                mine.into_iter().map(|(name, slot)| (slot, name)).collect()
             } else {
-                match store.prints().get(&user).and_then(|f| f.get(finger)) {
-                    Some(slot) => Some(*slot),
+                match mine.get(finger) {
+                    Some(slot) => [(*slot, finger.to_string())].into_iter().collect(),
                     None => return Err(WorkerError::NotEnrolled(finger.to_string())),
                 }
             }
@@ -487,15 +518,19 @@ impl<T: Transport> Worker<T> {
             if let Ok(elanprint_proto::VerifyOutcome::Match(id)) =
                 elanprint_proto::VerifyOutcome::classify(status)
             {
-                if wanted_slot.is_some_and(|want| want != id) {
-                    tracing::warn!(
-                        "asked for {finger}, the chip matched slot {id}, reporting no match"
-                    );
-                    result = dbus::verify::NO_MATCH;
-                } else {
-                    let name = self.finger_for_slot(&user, id);
-                    sink.emit(OpEvent::VerifyFingerSelected { finger: name })
+                match allowed.get(&id) {
+                    Some(name) => {
+                        sink.emit(OpEvent::VerifyFingerSelected {
+                            finger: name.clone(),
+                        })
                         .await;
+                    }
+                    None => {
+                        tracing::warn!(
+                            "chip matched slot {id}, which {user} does not own, reporting no match"
+                        );
+                        result = dbus::verify::NO_MATCH;
+                    }
                 }
             }
             sink.emit(OpEvent::VerifyStatus {
@@ -547,7 +582,13 @@ impl<T: Transport> Worker<T> {
             }
         }
         let slot = self.free_slot(cancel).await?;
-        let mut sm = Enroll::new(slot);
+        let stages = elanprint_proto::enroll_stages();
+        let fw = match self.firmware {
+            Some((major, minor)) => format!("{major}.{minor}"),
+            None => "unknown".to_string(),
+        };
+        tracing::info!("enrol {finger} into slot {slot}, {stages} stages, firmware {fw}");
+        let mut sm = Enroll::with_total(slot, stages);
         let EnrollAction::Send(mut out) = sm.start() else {
             return Err(WorkerError::Enroll(
                 elanprint_proto::EnrollError::UnexpectedReply,
@@ -649,17 +690,6 @@ impl<T: Transport> Worker<T> {
         Err(WorkerError::Enroll(elanprint_proto::EnrollError::MaxEnrolled))
     }
 
-    fn finger_for_slot(&self, user: &str, slot: u8) -> String {
-        match Store::open(&self.store_path) {
-            Ok(store) => store
-                .prints()
-                .get(user)
-                .and_then(|f| f.iter().find(|(_, s)| **s == slot).map(|(n, _)| n.clone()))
-                .unwrap_or_else(|| "any".to_string()),
-            Err(_) => "any".to_string(),
-        }
-    }
-
     async fn round(
         &mut self,
         out: &[u8],
@@ -677,6 +707,10 @@ impl<T: Transport> Worker<T> {
                     Ok(bytes) => Ok(bytes),
                     Err(UsbError::ShortRead { data, .. }) => Ok(data),
                     Err(UsbError::Cancelled) => Err(WorkerError::Cancelled),
+                    // a timeout here is what an unarmed session looks like
+                    Err(UsbError::Timeout(d)) if ep == EndpointIn::TouchWait => {
+                        Err(WorkerError::Usb(UsbError::TouchWaitSilent(d)))
+                    }
                     Err(e) => Err(WorkerError::Usb(e)),
                 }
             }

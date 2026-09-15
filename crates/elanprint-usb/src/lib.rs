@@ -55,9 +55,15 @@ pub struct Device {
 
 impl Device {
     pub async fn open() -> Result<Self, UsbError> {
-        let info = nusb::list_devices()?
-            .find(|d| d.vendor_id() == VID && d.product_id() == PID)
-            .ok_or(UsbError::NotFound)?;
+        // the PID list is explicit on purpose, never probe an unknown one
+        let elan: Vec<_> = nusb::list_devices()?.filter(|d| d.vendor_id() == VID).collect();
+        let info = match elan.iter().find(|d| d.product_id() == PID) {
+            Some(d) => d.clone(),
+            None => match elan.first() {
+                Some(other) => return Err(UsbError::UnsupportedProduct(other.product_id())),
+                None => return Err(UsbError::NotFound),
+            },
+        };
 
         tracing::debug!(
             bus = info.bus_number(),

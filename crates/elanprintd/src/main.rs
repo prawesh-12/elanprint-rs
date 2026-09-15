@@ -101,7 +101,7 @@ impl Device {
         target: &str,
     ) -> Result<(), FprintError> {
         let uid = self.caller_uid(hdr).await?;
-        if access::may_act(uid, access::lookup_uid(target)) {
+        if access::may_act(uid, access::lookup_uid(target).await) {
             return Ok(());
         }
         tracing::warn!("refused uid {uid} acting on {target}'s fingerprints");
@@ -280,7 +280,7 @@ impl Device {
     #[zbus(property, name = "num-enroll-stages")]
     async fn num_enroll_stages(&self) -> i32 {
         if self.state.is_claimed() {
-            elanprint_proto::TOTAL_ENROLL_ATTEMPTS as i32
+            i32::from(elanprint_proto::enroll_stages())
         } else {
             -1
         }
@@ -350,7 +350,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
     conn.request_name(BUS_NAME).await?;
-    tracing::info!("claimed {BUS_NAME}, serving {DEVICE_PATH}");
+    tracing::info!(
+        "claimed {BUS_NAME}, serving {DEVICE_PATH}, {} enroll stages",
+        elanprint_proto::enroll_stages()
+    );
+    tracing::info!("firmware version is logged on the first claim");
 
     let sleep_worker = worker.clone();
     let sleep_cancel = op_cancel.clone();

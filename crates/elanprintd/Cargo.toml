@@ -15,7 +15,7 @@ elanprint-store.workspace = true
 elanprint-algo.workspace = true
 anyhow.workspace = true
 futures-util.workspace = true
-tokio = { workspace = true, features = ["signal"] }
+tokio = { workspace = true, features = ["signal", "process"] }
 thiserror.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

@@ -324,19 +324,13 @@ async fn a_cancelled_enroll_erases_nothing() {
 async fn claim_release_claim_leaves_the_count_alone() {
     let path = store_path("cycle");
     write_store(&path, &[("u", "right-index-finger", 0)]);
-    let fake = Fake::new(vec![
-        enrolled_num(1),
-        vec![],
-        enrolled_num(1),
-        vec![],
-        enrolled_num(1),
-        vec![],
-        enrolled_num(1),
-        vec![],
-        enrolled_num(1),
-        vec![],
-        enrolled_num(1),
-    ]);
+    let mut replies = vec![vec![0x01, 0x08]]; // fw_ver, read once per handle
+    for _ in 0..5 {
+        replies.push(enrolled_num(1));
+        replies.push(Vec::new()); // abort answers nothing
+    }
+    replies.push(enrolled_num(1));
+    let fake = Fake::new(replies);
     let mut w = claimed(fake.clone(), path.clone());
     for _ in 0..5 {
         if let Err(e) = w.claim("u".to_string()).await {
@@ -351,12 +345,18 @@ async fn claim_release_claim_leaves_the_count_alone() {
 
     assert_eq!(count, 1, "the count is unchanged after five cycles");
     assert!(fake.erases().is_empty(), "a cycle erased: {:?}", fake.erases());
+    let mut fw_reads = 0;
     for out in fake.sent() {
+        if out == vec![0x40, 0x19] {
+            fw_reads += 1;
+            continue;
+        }
         assert!(
             out == vec![0x40, 0xff, 0x04] || out == vec![0x40, 0xff, 0x02],
-            "claim/release sent more than arm and abort: {out:?}"
+            "claim/release sent more than fw_ver, arm and abort: {out:?}"
         );
     }
+    assert_eq!(fw_reads, 1, "firmware is read once, not once per claim");
     let _ = std::fs::remove_file(&path);
 }
 
@@ -803,5 +803,164 @@ async fn any_accepts_whichever_finger_matched() {
             })
         );
     }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Claimed by a named user, for cross-user checks.
+fn claimed_as(fake: Fake, path: PathBuf, user: &str) -> Worker<Fake> {
+    let mut w = claimed(fake, path);
+    w.claimed = Some(user.to_string());
+    w.state.set_claimed_user(Some(user.to_string()));
+    w
+}
+
+/// One user's template must not authenticate another.
+///
+/// `pam_fprintd` sends finger "any", so nothing named constrains the match.
+/// The chip matches against every template it holds and returns whichever
+/// hit, so only slots the claiming user owns may count.
+#[tokio::test]
+async fn another_users_template_is_not_a_match() {
+    let path = store_path("cross-user");
+    write_store(
+        &path,
+        &[("alice", "left-index-finger", 0), ("bob", "right-index-finger", 1)],
+    );
+    // bob claims, the chip answers with alice's slot 0
+    let fake = Fake::new(vec![vec![0x40, 0x00]]);
+    let mut w = claimed_as(fake, path.clone(), "bob");
+    let op = begin(&w);
+    let (tx, mut rx) = mpsc::channel(32);
+    if let Err(e) = w
+        .verify(
+            &op,
+            "any".to_string(),
+            OpSink::new(OpKind::Verify, tx),
+            CancellationToken::new(),
+        )
+        .await
+    {
+        panic!("the verify ran: {e}");
+    }
+
+    let events = drain(&mut rx).await;
+    assert_eq!(
+        events.last(),
+        Some(&OpEvent::VerifyStatus {
+            result: "verify-no-match".to_string(),
+            done: true,
+        }),
+        "alice's slot must not authenticate bob: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, OpEvent::VerifyFingerSelected { .. })),
+        "no finger is named when none of the user's own matched"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A template in flash that the store does not map authenticates nobody.
+///
+/// Uninstalling leaves templates in the sensor. Nothing can enumerate them,
+/// so the only safe reading of an unmapped slot is that it belongs to no one.
+#[tokio::test]
+async fn an_orphaned_template_authenticates_nobody() {
+    let path = store_path("orphan");
+    write_store(&path, &[("bob", "right-index-finger", 1)]);
+    // slot 3 is in flash from a previous owner, in no store
+    let fake = Fake::new(vec![vec![0x40, 0x03]]);
+    let mut w = claimed_as(fake, path.clone(), "bob");
+    let op = begin(&w);
+    let (tx, mut rx) = mpsc::channel(32);
+    if let Err(e) = w
+        .verify(
+            &op,
+            "any".to_string(),
+            OpSink::new(OpKind::Verify, tx),
+            CancellationToken::new(),
+        )
+        .await
+    {
+        panic!("the verify ran: {e}");
+    }
+    let events = drain(&mut rx).await;
+    assert_eq!(
+        events.last(),
+        Some(&OpEvent::VerifyStatus {
+            result: "verify-no-match".to_string(),
+            done: true,
+        }),
+        "an orphaned slot must authenticate nobody: {events:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The user's own finger still matches through "any", which is the PAM path.
+#[tokio::test]
+async fn any_still_matches_the_users_own_finger() {
+    let path = store_path("own-any");
+    write_store(
+        &path,
+        &[("bob", "left-index-finger", 1), ("bob", "right-index-finger", 2)],
+    );
+    for (reply, expected) in [(0x01u8, "left-index-finger"), (0x02, "right-index-finger")] {
+        let fake = Fake::new(vec![vec![0x40, reply]]);
+        let mut w = claimed_as(fake, path.clone(), "bob");
+        let op = begin(&w);
+        let (tx, mut rx) = mpsc::channel(32);
+        if let Err(e) = w
+            .verify(
+                &op,
+                "any".to_string(),
+                OpSink::new(OpKind::Verify, tx),
+                CancellationToken::new(),
+            )
+            .await
+        {
+            panic!("the verify ran: {e}");
+        }
+        let events = drain(&mut rx).await;
+        assert!(
+            events.contains(&OpEvent::VerifyFingerSelected {
+                finger: expected.to_string(),
+            }),
+            "slot {reply} is bob's {expected}: {events:?}"
+        );
+        assert_eq!(
+            events.last(),
+            Some(&OpEvent::VerifyStatus {
+                result: "verify-match".to_string(),
+                done: true,
+            })
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A user with nothing enrolled is refused before any touch.
+#[tokio::test]
+async fn a_user_with_no_prints_cannot_verify() {
+    let path = store_path("cross-user-none");
+    write_store(&path, &[("alice", "left-index-finger", 0)]);
+    let fake = Fake::new(vec![vec![0x40, 0x00]]);
+    let mut w = claimed_as(fake.clone(), path.clone(), "bob");
+    let op = begin(&w);
+    let (tx, mut rx) = mpsc::channel(32);
+    let result = w
+        .verify(
+            &op,
+            "any".to_string(),
+            OpSink::new(OpKind::Verify, tx),
+            CancellationToken::new(),
+        )
+        .await;
+    assert!(matches!(result, Err(WorkerError::NoPrints(_))));
+    assert!(
+        !fake.sent().iter().any(|o| o == &vec![0x40, 0xff, 0x03]),
+        "no verify command was sent"
+    );
+    let _ = drain(&mut rx).await;
     let _ = std::fs::remove_file(&path);
 }

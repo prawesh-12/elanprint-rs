@@ -1,43 +1,52 @@
 //! Every user-facing string in one place.
 
 pub const TITLE: &str = "elanprint login";
-pub const CONNECTED: &str = "connected";
-pub const NOT_CONNECTED: &str = "not connected";
-pub const READER_NOT_FOUND: &str = "reader not found";
-pub const PICK_ENROLL: &str = "pick a finger to enrol";
-pub const PICK_VERIFY: &str = "pick a finger to verify";
-pub const TOUCH: &str = "touch the sensor";
-pub const TOUCH_FIRST: &str = "touch the sensor to begin";
-pub const CONNECT: &str = "connect";
-pub const LOGIN: &str = "login with fingerprint";
-pub const TRY_AGAIN: &str = "try again";
-pub const CANCEL: &str = "cancel";
-pub const SIGNOUT: &str = "sign out";
-pub const VERIFIED: &str = "verified";
-pub const NOT_RECOGNISED: &str = "not recognised";
-pub const PASSWORD_FALLBACK: &str = "too many attempts, use your password";
-pub const SELF_TEST: &str = "self-test only, real login is handled by PAM";
-pub const START_ENROLL: &str = "start enroll";
-pub const CANCEL_ENROLL: &str = "cancel enroll";
-pub const DELETE: &str = "delete";
-pub const CONFIRM_DELETE: &str = "confirm";
-pub const ENROLLED_LIST: &str = "enrolled fingers";
-pub const NO_FINGERS: &str = "no fingers enrolled yet";
+pub const CONNECTED: &str = "Connected";
+pub const NOT_CONNECTED: &str = "Not connected";
+pub const READER_NOT_FOUND: &str = "Reader not found";
+pub const PICK_ENROLL: &str = "Pick a finger to enrol";
+pub const PICK_VERIFY: &str = "Pick a finger to verify";
+pub const TOUCH: &str = "Touch the sensor";
+pub const TOUCH_FIRST: &str = "Touch the sensor";
+pub const CONNECT: &str = "Connect";
+pub const VERIFY_ACTION: &str = "Test my finger";
+pub const TRY_AGAIN: &str = "Try again";
+pub const CANCEL: &str = "Cancel";
+pub const SIGNOUT: &str = "Sign out";
+pub const VERIFIED: &str = "Verified";
+pub const NOT_RECOGNISED: &str = "Not recognised";
+pub const PASSWORD_FALLBACK: &str = "Too many attempts, use your password";
+pub const SELF_TEST: &str = "Self-test only, real login is handled by PAM";
+pub const START_ENROLL: &str = "Start enrol";
+pub const CANCEL_ENROLL: &str = "Cancel enrol";
+pub const DELETE: &str = "Delete";
+pub const CONFIRM_DELETE: &str = "Confirm";
+pub const ENROLLED_LIST: &str = "Enrolled fingers";
+pub const NO_FINGERS: &str = "No fingers enrolled yet";
 
 pub fn enroll_failure(result: &str) -> String {
     match result {
-        "enroll-duplicate" => "that finger is already enrolled, delete it first".to_string(),
-        "enroll-data-full" => "the sensor has no free slots left".to_string(),
-        "enroll-disconnected" => "the reader disconnected".to_string(),
-        "enroll-failed" | "enroll-unknown-error" => "enrol failed, see log".to_string(),
-        other => format!("enrol ended: {other}"),
+        "enroll-duplicate" => "That finger is already enrolled, delete it first".to_string(),
+        "enroll-data-full" => "The sensor has no free slots left".to_string(),
+        "enroll-disconnected" => "The reader disconnected".to_string(),
+        "enroll-failed" | "enroll-unknown-error" => "Enrol failed, see log".to_string(),
+        other => format!("Enrol ended: {other}"),
     }
 }
 
 pub fn touch_again(done: u8, total: u8) -> String {
     if done >= total {
-        "saving".to_string()
+        "Saving".to_string()
     } else {
-        format!("good, touch again ({} to go)", total.saturating_sub(done))
+        "Touch again".to_string()
+    }
+}
+
+/// `any` is the protocol value. It needs saying in words.
+pub fn finger_label(name: &str) -> String {
+    if name == "any" {
+        "any enrolled finger".to_string()
+    } else {
+        name.to_string()
     }
 }
