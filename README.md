@@ -22,7 +22,6 @@ screen and GNOME greeter login all work.
 
 ### Table of Contents
 
-- <sub>[Status](#status)</sub>
 - <sub>[Do I have this sensor?](#do-i-have-this-sensor)</sub>
 - <sub>[Requirements](#requirements)</sub>
 - <sub>[Install](#install)</sub>
@@ -30,6 +29,8 @@ screen and GNOME greeter login all work.
   - <sub>[From source](#from-source)</sub>
   - <sub>[Templates outlive the uninstall](#templates-outlive-the-uninstall)</sub>
   - <sub>[Development mode](#development-mode)</sub>
+- <sub>[Preview](#preview)</sub>
+- <sub>[Status](#status)</sub>
 - <sub>[Use](#use)</sub>
 - <sub>[What this project found](#what-this-project-found)</sub>
 - <sub>[Tech stack](#tech-stack)</sub>
@@ -42,33 +43,6 @@ screen and GNOME greeter login all work.
 - <sub>[Development](#development)</sub>
 - <sub>[Credits](#credits)</sub>
 - <sub>[License](#license)</sub>
-
----
-
-## Status
-
-It works. My laptop is also the only machine it has ever run on.
-
-Ubuntu 24.04.4 LTS, kernel 7.0.0-31-generic, GNOME Shell 46.0, fprintd 1.94.3,
-x86_64. Every byte in `docs/findings.md` came off that machine. No second
-laptop, no second sensor, no other distribution.
-
-| Works | Evidence |
-| ----- | -------- |
-| Enrol, 8 touches, writes flash | `commit` answered `40 00` in 103 ms |
-| Verify a known finger | 10 of 10 matches, plus 5 of 5 in a later run |
-| Reject an unknown finger | 10 of 10 no-match, zero retries |
-| Two fingers in separate slots | left index matched id 0, right index id 1 |
-| Template survives a reboot | count `40 01` and a match after a power cycle |
-| Lock screen unlock | opened by the `gdm-fingerprint` PAM service |
-| Greeter login after logout | `session opened for user ... (gdm-fingerprint)` |
-
-Eight of the sixteen commands in `docs/protocol.md` are `confirmed`: sent on
-this device, response recorded. The rest are `documented`. Those bytes are
-transcribed from a source and have never been run here.
-
-Not done: `delete` under the current code, `wipe_all` at all, and the 8 stage
-count is still borrowed from a different chip.
 
 ---
 
@@ -234,6 +208,44 @@ sudo systemctl stop elanprintd
 ```
 
 ---
+
+## Preview
+
+<p align="center">
+  <img src="assets/screenshot-enrol.png" alt="The app, enrol view" width="330">
+  <img src="assets/screenshot-verify.png" alt="The app, verify view with sensor info open" width="330">
+</p>
+
+The app enrols fingers, deletes them, and runs a self-test against the sensor.
+It is not an authentication surface. Real login goes through PAM, and the app
+unlocks nothing.
+
+---
+
+## Status
+
+It works. My laptop is also the only machine it has ever run on.
+
+Ubuntu 24.04.4 LTS, kernel 7.0.0-31-generic, GNOME Shell 46.0, fprintd 1.94.3,
+x86_64. Every byte in `docs/findings.md` came off that machine. No second
+laptop, no second sensor, no other distribution.
+
+| Works | Evidence |
+| ----- | -------- |
+| Enrol, 8 touches, writes flash | `commit` answered `40 00` in 103 ms |
+| Verify a known finger | 10 of 10 matches, plus 5 of 5 in a later run |
+| Reject an unknown finger | 10 of 10 no-match, zero retries |
+| Two fingers in separate slots | left index matched id 0, right index id 1 |
+| Template survives a reboot | count `40 01` and a match after a power cycle |
+| Lock screen unlock | opened by the `gdm-fingerprint` PAM service |
+| Greeter login after logout | `session opened for user ... (gdm-fingerprint)` |
+
+Eight of the sixteen commands in `docs/protocol.md` are `confirmed`: sent on
+this device, response recorded. The rest are `documented`. Those bytes are
+transcribed from a source and have never been run here.
+
+Not done: `delete` under the current code, `wipe_all` at all, and the 8 stage
+count is still borrowed from a different chip.
 
 ## Use
 
