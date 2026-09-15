@@ -3,3 +3,4 @@ target/
 *.pcapng
 captures/
 extras/
+assets/*.mmd

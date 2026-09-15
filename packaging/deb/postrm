@@ -1,0 +1,25 @@
+#!/bin/sh
+# Kept on remove, deleted on purge. Neither erases the sensor.
+set -e
+
+case "$1" in
+remove|purge)
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if systemctl list-unit-files fprintd.service >/dev/null 2>&1; then
+        systemctl unmask fprintd.service >/dev/null 2>&1 || true
+    fi
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+
+    echo "elanprint-rs: templates stay in the sensor's own flash and were not"
+    echo "  erased. They still authenticate, including for a different account."
+    echo "  To erase them, reinstall and run: sudo /usr/libexec/elanprint-cli wipe-device"
+    ;;
+esac
+
+if [ "$1" = "purge" ] && [ -d /var/lib/elanprint ]; then
+    rm -rf /var/lib/elanprint
+    echo "elanprint-rs: the name to slot mapping was deleted. Nothing on this"
+    echo "  host now records which templates exist on the sensor."
+fi
+
+exit 0

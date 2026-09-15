@@ -1,0 +1,41 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+configure)
+    install -d -m 0700 /var/lib/elanprint
+
+    if [ -f /etc/systemd/system/elanprintd.service ]; then
+        echo "elanprint-rs: /etc/systemd/system/elanprintd.service is from a" >&2
+        echo "  source install and overrides this package's unit. Remove it" >&2
+        echo "  with tools/uninstall.sh from the checkout." >&2
+    fi
+
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    udevadm trigger --action=add --subsystem-match=usb \
+        --attr-match=idVendor=04f3 >/dev/null 2>&1 || true
+
+    # fprintd owns the same bus name. Unmasked again on removal.
+    if systemctl list-unit-files fprintd.service >/dev/null 2>&1; then
+        systemctl mask fprintd.service >/dev/null 2>&1 || true
+    fi
+
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable elanprintd.service >/dev/null 2>&1 || true
+    systemctl restart elanprintd.service >/dev/null 2>&1 || true
+
+    if ! systemctl is-active --quiet elanprintd.service; then
+        echo "elanprint-rs: elanprintd did not start. With no 04f3:0c90 sensor" >&2
+        echo "  attached that is expected. Check: systemctl status elanprintd" >&2
+    fi
+
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -qf /usr/share/icons/hicolor 2>/dev/null || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+        update-desktop-database -q /usr/share/applications 2>/dev/null || true
+    fi
+    ;;
+esac
+
+exit 0

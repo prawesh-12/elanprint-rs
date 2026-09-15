@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+remove|deconfigure)
+    systemctl disable --now elanprintd.service >/dev/null 2>&1 || true
+    ;;
+upgrade)
+    systemctl stop elanprintd.service >/dev/null 2>&1 || true
+    ;;
+esac
+
+exit 0

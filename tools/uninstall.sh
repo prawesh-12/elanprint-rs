@@ -66,7 +66,7 @@ echo "  binary removed"
 
 rm -f /usr/bin/elanprint-rs
 rm -f /usr/share/applications/elanprint-rs.desktop
-for s in 48 64 128 256; do
+for s in 48 64 128 256 512; do
     rm -f "/usr/share/icons/hicolor/${s}x${s}/apps/elanprint-rs.png"
 done
 command -v gtk-update-icon-cache >/dev/null 2>&1 \

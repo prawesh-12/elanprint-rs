@@ -75,7 +75,7 @@ echo "  app    -> /usr/bin/elanprint-rs"
 install -D -m 0755 target/release/elanprint-login /usr/bin/elanprint-rs
 
 echo "  icons  -> /usr/share/icons/hicolor"
-for s in 48 64 128 256; do
+for s in 48 64 128 256 512; do
     install -D -m 0644 "assets/icon-$s.png" \
         "/usr/share/icons/hicolor/${s}x${s}/apps/elanprint-rs.png"
 done
