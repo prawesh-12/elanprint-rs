@@ -865,6 +865,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "elanprint-keyring-setup"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "zbus",
+]
+
+[[package]]
 name = "elanprint-login"
 version = "0.1.0"
 dependencies = [
@@ -872,6 +882,7 @@ dependencies = [
  "eframe",
  "egui",
  "elanprint-algo",
+ "elanprint-keyring-setup",
  "futures-util",
  "thiserror 1.0.69",
  "tokio",
@@ -2196,6 +2207,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "pam-elanprint-keyring"
+version = "0.1.0"
+dependencies = [
+ "zeroize",
 ]
 
 [[package]]
@@ -3920,6 +3938,12 @@ dependencies = [
  "syn 2.0.119",
  "synstructure",
 ]
+
+[[package]]
+name = "zeroize"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
 
 [[package]]
 name = "zerotrie"

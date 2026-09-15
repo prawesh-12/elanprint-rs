@@ -74,6 +74,16 @@ install -D -m 0755 target/release/elanprint-cli /usr/libexec/elanprint-cli
 echo "  app    -> /usr/bin/elanprint-rs"
 install -D -m 0755 target/release/elanprint-login /usr/bin/elanprint-rs
 
+echo "  setup  -> /usr/bin/elanprint-keyring"
+install -D -m 0755 target/release/elanprint-keyring /usr/bin/elanprint-keyring
+
+MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo x86_64-linux-gnu)
+echo "  pam    -> /usr/lib/$MULTIARCH/security/pam_elanprint_keyring.so"
+install -D -m 0644 target/release/libpam_elanprint_keyring.so \
+    "/usr/lib/$MULTIARCH/security/pam_elanprint_keyring.so"
+install -d -m 0700 /var/lib/elanprint-rs
+[ -f /var/lib/elanprint-rs/keyring.cred ] && chmod 0600 /var/lib/elanprint-rs/keyring.cred
+
 echo "  icons  -> /usr/share/icons/hicolor"
 for s in 48 64 128 256 512; do
     install -D -m 0644 "assets/icon-$s.png" \

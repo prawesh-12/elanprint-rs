@@ -64,6 +64,9 @@ fi
 rm -f /usr/libexec/elanprintd
 echo "  binary removed"
 
+MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo x86_64-linux-gnu)
+rm -f "/usr/lib/$MULTIARCH/security/pam_elanprint_keyring.so"
+rm -f /usr/bin/elanprint-keyring
 rm -f /usr/bin/elanprint-rs
 rm -f /usr/share/applications/elanprint-rs.desktop
 for s in 48 64 128 256 512; do

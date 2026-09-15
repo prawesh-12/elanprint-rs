@@ -24,6 +24,9 @@ fi
 for b in elanprintd elanprint-cli elanprint-login; do
     [ -f "target/release/$b" ] || { echo "missing target/release/$b"; exit 1; }
 done
+for f in libpam_elanprint_keyring.so elanprint-keyring; do
+    [ -f "target/release/$f" ] || { echo "missing target/release/$f"; exit 1; }
+done
 
 ROOT=target/deb/$PKG
 rm -rf target/deb
@@ -33,6 +36,13 @@ install -D -m 0755 target/release/elanprintd    "$ROOT/usr/libexec/elanprintd"
 install -D -m 0755 target/release/elanprint-cli "$ROOT/usr/libexec/elanprint-cli"
 # X11 takes WM_CLASS from the binary name, which must match StartupWMClass
 install -D -m 0755 target/release/elanprint-login "$ROOT/usr/bin/elanprint-rs"
+
+install -D -m 0755 target/release/elanprint-keyring "$ROOT/usr/bin/elanprint-keyring"
+
+# pam.d must point at a root-owned path, never /tmp
+MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo x86_64-linux-gnu)
+install -D -m 0644 target/release/libpam_elanprint_keyring.so \
+    "$ROOT/usr/lib/$MULTIARCH/security/pam_elanprint_keyring.so"
 
 install -D -m 0644 systemd/elanprintd.service \
     "$ROOT/usr/lib/systemd/system/elanprintd.service"

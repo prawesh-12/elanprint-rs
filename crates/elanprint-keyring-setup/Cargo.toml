@@ -1,0 +1,22 @@
+[package]
+name = "elanprint-keyring-setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "elanprint_keyring_setup"
+path = "src/lib.rs"
+
+[[bin]]
+name = "elanprint-keyring"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+zbus.workspace = true
+
+[lints]
+workspace = true

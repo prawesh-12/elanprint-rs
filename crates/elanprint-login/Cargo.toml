@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 elanprint-algo.workspace = true
+elanprint-keyring-setup.workspace = true
 anyhow.workspace = true
 egui.workspace = true
 futures-util.workspace = true

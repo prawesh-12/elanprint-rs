@@ -32,6 +32,7 @@ screen and GNOME greeter login all work.
 - <sub>[Preview](#preview)</sub>
 - <sub>[Status](#status)</sub>
 - <sub>[Use](#use)</sub>
+- <sub>[Keyring unlock](#keyring-unlock)</sub>
 - <sub>[What this project found](#what-this-project-found)</sub>
 - <sub>[Tech stack](#tech-stack)</sub>
 - <sub>[Folder structure](#folder-structure)</sub>
@@ -212,13 +213,17 @@ sudo systemctl stop elanprintd
 ## Preview
 
 <p align="center">
-  <img src="assets/screenshot-enrol.png" alt="The app, enrol view" width="330">
-  <img src="assets/screenshot-verify.png" alt="The app, verify view with sensor info open" width="330">
+  <img src="assets/screenshot-enrol.png" alt="The app, enrol view" width="250">
+  <img src="assets/screenshot-verify.png" alt="The app, verify view with sensor info open" width="250">
+  <img src="assets/screenshot-keyring.png" alt="The app, keyring view" width="250">
 </p>
 
 The app enrols fingers, deletes them, and runs a self-test against the sensor.
-It is not an authentication surface. Real login goes through PAM, and the app
-unlocks nothing.
+The third tab sets up fingerprint unlock of the GNOME login keyring, which is
+off until you turn it on.
+
+None of it is an authentication surface. Real login goes through PAM, and the
+app unlocks nothing.
 
 ---
 
@@ -269,6 +274,73 @@ sending them. Both exist for bring-up, not for daily use.
 
 The daemon holds USB interface 0 for its lifetime once claimed. The CLI reports
 "Device or resource busy" until you stop the service.
+
+---
+
+## Keyring unlock
+
+Fingerprint login leaves the GNOME login keyring locked. You get in, then a few
+minutes later a dialog asks for a password before Wi-Fi, browser logins or
+online accounts will work.
+
+```
+gdm-fingerprint: gkr-pam: no password is available for user
+gdm-fingerprint: pam_unix(gdm-fingerprint:session): session opened for user
+gdm-fingerprint: gkr-pam: couldn't unlock the login keyring
+```
+
+**This is not a fault in this driver.** Every fingerprint reader on Linux does
+it, including the ones libfprint has supported for years.
+
+### The limitation
+
+Your login keyring is encrypted with your account password. `pam_gnome_keyring`
+takes that password from `PAM_AUTHTOK`, which a password module sets earlier in
+the PAM stack. `pam_fprintd` sets nothing there, because a fingerprint is not a
+password and cannot be turned into one. This chip answers a match with two
+bytes, `40 00`. There is no key in that.
+
+macOS and Windows solve it in hardware: the password is kept wrapped in a
+security chip and released when the biometric matches. The fingerprint does not
+become the password, it opens a safe holding one. GNOME has no equivalent path,
+and `gnome-keyring` accepts a typed password or stays locked.
+
+### How this fixes it
+
+Ubuntu's `/etc/pam.d/gdm-fingerprint` already runs `pam_gnome_keyring` on every
+fingerprint login. The chain is wired. Only the authtok is missing.
+
+So: keep a random 32 byte secret sealed in the TPM, re-key the keyring to it,
+and have a small PAM module hand it over after the fingerprint matches.
+
+```
+finger matches
+  -> pam_fprintd returns success
+  -> pam_elanprint_keyring unseals the secret, sets PAM_AUTHTOK
+  -> pam_gnome_keyring reads it and unlocks the keyring
+```
+
+Your account password is never stored anywhere. The module cannot block a
+login: every path, including a dead TPM or a panic, returns `PAM_IGNORE`, which
+leaves the behaviour you had before.
+
+Turn it on in the app's Keyring tab, or:
+
+```bash
+elanprint-keyring enable
+elanprint-keyring status
+elanprint-keyring rotate     # replace the key
+elanprint-keyring disable
+```
+
+It is off until you turn it on, and the package wires nothing by itself.
+
+**It is a real trade.** A matching finger then releases every saved secret, not
+just the session, and you get a recovery key that is the only way in if the TPM
+ever stops unsealing. Read
+**[docs/keyring.md](docs/keyring.md)** before enabling it: the design, the
+security analysis, every file it writes, what happens when each part fails, and
+the recovery path.
 
 ---
 
@@ -331,10 +403,13 @@ elanprint-rs/
 │   ├── elanprint-algo/     login decision engine, session policy and status mapping
 │   ├── elanprintd/         system daemon, owns net.reactivated.Fprint on the system bus
 │   ├── elanprint-cli/      developer tool for bring-up and debugging
-│   └── elanprint-login/    desktop app for enrolment and self-test, not an auth surface
+│   ├── elanprint-login/    desktop app for enrolment and self-test, not an auth surface
+│   ├── pam-elanprint-keyring/   PAM module that unlocks the login keyring
+│   └── elanprint-keyring-setup/ the setup behind the Keyring tab and the CLI
 ├── docs/
 │   ├── protocol.md         the command table; nothing reaches the device unless it is here
-│   └── findings.md         what the device actually did, append only
+│   ├── findings.md         what the device actually did, append only
+│   └── keyring.md          the keyring problem, the fix, and its trade-offs
 ├── packaging/deb/          postinst, prerm and postrm for the .deb
 ├── tools/
 │   ├── install.sh          install the daemon, the udev rule and the systemd unit

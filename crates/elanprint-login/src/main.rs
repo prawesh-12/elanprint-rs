@@ -11,6 +11,7 @@ mod client;
 mod copy;
 mod fx;
 mod icon;
+mod keyring_tab;
 mod sensor;
 
 use app::LoginApp;

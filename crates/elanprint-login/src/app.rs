@@ -14,6 +14,7 @@ use crate::client::{AuthEvent, EnrollEvent, FingerprintClient};
 use crate::copy;
 use crate::fx::{Fx, Pulse};
 use crate::icon;
+use crate::keyring_tab::{self, KeyringTab, Stage};
 use crate::sensor::{self, Found};
 
 /// One spacing unit. Every gap below is a multiple of it.
@@ -55,6 +56,7 @@ const ENROLL_FINGERS: [&str; 10] = [
 enum Mode {
     Verify,
     Enroll,
+    Keyring,
 }
 
 /// What the mark and the status line are saying right now.
@@ -102,6 +104,7 @@ pub struct LoginApp {
     delete_pending: bool,
     list_pending: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
     sensor: Found,
+    keyring: KeyringTab,
 }
 
 impl LoginApp {
@@ -133,6 +136,7 @@ impl LoginApp {
             delete_pending: false,
             list_pending: None,
             sensor: sensor::scan(),
+            keyring: KeyringTab::new(),
         }
     }
 
@@ -155,6 +159,12 @@ impl LoginApp {
                     EnrollTone::Idle => Tone::Neutral,
                 }
             }
+            Mode::Keyring => match self.keyring.stage {
+                Stage::Done => Tone::Good,
+                Stage::Failed(_) => Tone::Bad,
+                Stage::Idle if !self.keyring.looks_enabled() => Tone::Dim,
+                _ => Tone::Neutral,
+            },
         }
     }
 
@@ -172,6 +182,11 @@ impl LoginApp {
                 _ => None,
             },
             Mode::Enroll => None,
+            Mode::Keyring => match self.keyring.stage {
+                Stage::Done => Some(true),
+                Stage::Failed(_) => Some(false),
+                _ => None,
+            },
         }
     }
 
@@ -185,7 +200,9 @@ impl LoginApp {
         let (tx, rx) = std::sync::mpsc::channel::<ConnectOutcome>();
         std::thread::spawn(move || {
             let outcome = handle.block_on(async {
-                let client = FingerprintClient::connect().await.map_err(|e| e.friendly())?;
+                let client = FingerprintClient::connect()
+                    .await
+                    .map_err(|e| e.friendly())?;
                 let fingers = client.list(&user).await.map_err(|e| e.friendly())?;
                 let stages = client.stages().await.unwrap_or(-1);
                 Ok::<_, String>((Arc::new(client), fingers, stages))
@@ -283,9 +300,8 @@ impl LoginApp {
         let handle = self.handle.clone();
         let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<String>, String>>();
         std::thread::spawn(move || {
-            let outcome = handle.block_on(async {
-                client.list(&user).await.map_err(|e| e.friendly())
-            });
+            let outcome =
+                handle.block_on(async { client.list(&user).await.map_err(|e| e.friendly()) });
             let _ = tx.send(outcome);
         });
         self.list_pending = Some(rx);
@@ -406,10 +422,7 @@ impl LoginApp {
                         if t > 0 {
                             self.enroll_total = t;
                         }
-                        self.enroll_status = copy::touch_again(
-                            self.enroll_done,
-                            self.enroll_total,
-                        );
+                        self.enroll_status = copy::touch_again(self.enroll_done, self.enroll_total);
                         self.enroll_tone = EnrollTone::Idle;
                         self.fx.flash(ACCENT);
                     }
@@ -471,6 +484,10 @@ impl LoginApp {
 impl eframe::App for LoginApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        self.keyring.poll();
+        if self.keyring.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(120));
+        }
         polish(ctx);
         let active = self.events.is_some() || self.enroll_events.is_some();
         let want = if active { Pulse::Breathe } else { Pulse::Off };
@@ -557,12 +574,13 @@ fn stage(ui: &mut egui::Ui, app: &LoginApp, now: Instant) {
     let dimmed = match app.mode {
         Mode::Verify => matches!(app.screen, Screen::Disconnected | Screen::Locked),
         Mode::Enroll => app.client.is_none(),
+        Mode::Keyring => !app.keyring.looks_enabled(),
     };
     let tone = app.tone();
     let outcome = app.outcome();
     let (done, total) = match app.mode {
         Mode::Enroll => (app.enroll_done, app.enroll_total.max(1)),
-        Mode::Verify => (0, 1),
+        Mode::Verify | Mode::Keyring => (0, 1),
     };
 
     // the mark's colour is its state, so no second accent element is needed
@@ -578,15 +596,18 @@ fn stage(ui: &mut egui::Ui, app: &LoginApp, now: Instant) {
     let dx = app.fx.shake_dx(now);
     let size = 84.0;
     ui.vertical_centered(|ui| {
-        let (slot, _) =
-            ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+        let (slot, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
         let rect = slot.translate(egui::vec2(dx, 0.0));
         match outcome {
             Some(true) => icon::check(ui, rect.shrink(size * 0.22), GOOD),
             Some(false) => icon::cross(ui, rect.shrink(size * 0.24), BAD),
             None => {
                 let mut m = icon::Mark::new(size, colour);
-                m.alpha = if dimmed { 0.45 } else { app.fx.pulse_alpha(now) };
+                m.alpha = if dimmed {
+                    0.45
+                } else {
+                    app.fx.pulse_alpha(now)
+                };
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                 let _ = icon::mark(&mut child, &m);
             }
@@ -670,7 +691,10 @@ fn sensor_info(ui: &mut egui::Ui, app: &LoginApp) {
             };
             for (k, v) in [
                 ("Device", s.title()),
-                ("Firmware", s.firmware.clone().unwrap_or_else(|| "unknown".into())),
+                (
+                    "Firmware",
+                    s.firmware.clone().unwrap_or_else(|| "unknown".into()),
+                ),
                 ("Enrol stages", stages),
                 ("Templates enrolled", templates.to_string()),
             ] {
@@ -704,6 +728,19 @@ fn stage_line(app: &LoginApp) -> String {
             }
             copy::PICK_ENROLL.to_string()
         }
+        Mode::Keyring => match &app.keyring.stage {
+            Stage::Idle if app.keyring.looks_enabled() => copy::KEYRING_ON.to_string(),
+            Stage::Idle => copy::KEYRING_OFF.to_string(),
+            Stage::Confirm => copy::KEYRING_CONFIRM.to_string(),
+            Stage::ConfirmRotate => copy::KEYRING_REPLACE.to_string(),
+            Stage::Working(_) => copy::KEYRING_WORKING.to_string(),
+            Stage::Saved { .. } => copy::KEYRING_SAVE_CODE.to_string(),
+            Stage::Rekey { .. } => copy::KEYRING_REKEY.to_string(),
+            Stage::ShowKey(_) => copy::KEYRING_KEY.to_string(),
+            Stage::Rotated(_) => copy::KEYRING_REPLACED.to_string(),
+            Stage::Done => copy::KEYRING_DONE.to_string(),
+            Stage::Failed(why) => why.clone(),
+        },
     }
 }
 
@@ -722,13 +759,13 @@ fn dots(ui: &mut egui::Ui, done: u8, total: u8) {
 }
 
 fn controls(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
-    let locked = app.events.is_some() || app.enroll_events.is_some();
+    let locked = app.events.is_some() || app.enroll_events.is_some() || app.keyring.busy();
     segmented(ui, &mut app.mode, !locked);
     ui.add_space(U * 2.0);
-    if app.mode == Mode::Verify {
-        verify_controls(ui, app);
-    } else {
-        enroll_controls(ui, app, ctx);
+    match app.mode {
+        Mode::Verify => verify_controls(ui, app),
+        Mode::Enroll => enroll_controls(ui, app, ctx),
+        Mode::Keyring => keyring_controls(ui, app),
     }
 }
 
@@ -739,11 +776,18 @@ fn verify_controls(ui: &mut egui::Ui, app: &mut LoginApp) {
     // The daemon refuses any uid but the caller's, so a typed name could only
     // produce a confusing failure. The process knows who it is.
     let known = app.fingers.clone();
-    labelled_combo(ui, "Finger", "finger", &mut app.finger, editing, |ui, current| {
-        for name in known.clone() {
-            ui.selectable_value(current, name.clone(), copy::finger_label(&name));
-        }
-    });
+    labelled_combo(
+        ui,
+        "Finger",
+        "finger",
+        &mut app.finger,
+        editing,
+        |ui, current| {
+            for name in known.clone() {
+                ui.selectable_value(current, name.clone(), copy::finger_label(&name));
+            }
+        },
+    );
     ui.add_space(U * 3.0);
 
     match app.screen {
@@ -758,10 +802,7 @@ fn verify_controls(ui: &mut egui::Ui, app: &mut LoginApp) {
             }
         }
         _ => {
-            let retry = matches!(
-                app.screen,
-                Screen::Denied | Screen::Failed | Screen::Locked
-            );
+            let retry = matches!(app.screen, Screen::Denied | Screen::Failed | Screen::Locked);
             let label = if retry {
                 copy::TRY_AGAIN
             } else {
@@ -866,12 +907,279 @@ fn enroll_controls(ui: &mut egui::Ui, app: &mut LoginApp, ctx: &egui::Context) {
         });
 }
 
-/// Two segments, equal treatment, active one filled.
-fn segmented(ui: &mut egui::Ui, mode: &mut Mode, enabled: bool) {
-    let seg = (COL - U) / 2.0;
+fn keyring_row(ui: &mut egui::Ui, label: &str, value: &str, good: bool) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).size(11.0).weak());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let colour = if good {
+                GOOD
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            ui.label(egui::RichText::new(value).size(11.0).color(colour));
+        });
+    });
+}
+
+fn keyring_note(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(11.0)
+            .color(ui.visuals().weak_text_color()),
+    );
+}
+
+fn keyring_controls(ui: &mut egui::Ui, app: &mut LoginApp) {
+    match std::mem::replace(&mut app.keyring.stage, Stage::Idle) {
+        Stage::Idle if app.keyring.looks_enabled() => keyring_enabled(ui, app),
+        Stage::Idle => keyring_offer(ui, app),
+        Stage::Confirm => keyring_confirm(ui, app),
+        Stage::Working(note) => {
+            keyring_note(ui, note);
+            app.keyring.stage = Stage::Working(note);
+        }
+        Stage::Saved { secret, typed } => keyring_saved(ui, app, secret, typed),
+        Stage::Rekey { secret, password } => keyring_rekey(ui, app, secret, password),
+        Stage::ShowKey(secret) => {
+            keyring_note(ui, "Opens the keyring if the TPM ever stops unsealing.");
+            ui.add_space(U);
+            keyring_secret(ui, &secret);
+            ui.add_space(U * 0.75);
+            if app.keyring.recovery_file {
+                if full_button(ui, "Delete the copy in /root").clicked() {
+                    app.keyring.start_forget_file();
+                    return;
+                }
+                ui.add_space(U * 0.75);
+            }
+            if full_button(ui, "Close").clicked() {
+                return;
+            }
+            app.keyring.stage = Stage::ShowKey(secret);
+        }
+        Stage::ConfirmRotate => {
+            keyring_note(
+                ui,
+                "A new key is sealed and the keyring is re-keyed to it. The old \
+                 key stops working, including any copy you saved.",
+            );
+            ui.add_space(U * 1.5);
+            if primary_button(ui, "Replace the key", true).clicked() {
+                app.keyring.start_rotate();
+                return;
+            }
+            ui.add_space(U * 0.5);
+            if full_button(ui, copy::CANCEL).clicked() {
+                return;
+            }
+            app.keyring.stage = Stage::ConfirmRotate;
+        }
+        Stage::Rotated(secret) => {
+            keyring_note(ui, "Replaced. This is your new recovery key. Save it.");
+            ui.add_space(U);
+            keyring_secret(ui, &secret);
+            ui.add_space(U * 1.5);
+            if full_button(ui, "Close").clicked() {
+                return;
+            }
+            app.keyring.stage = Stage::Rotated(secret);
+        }
+        Stage::Done => {
+            keyring_note(
+                ui,
+                "Log out and back in with your finger. Your saved passwords open with it from now on.",
+            );
+            ui.add_space(U * 1.5);
+            if full_button(ui, "Close").clicked() {
+                app.keyring.refresh();
+                return;
+            }
+            app.keyring.stage = Stage::Done;
+        }
+        Stage::Failed(why) => {
+            keyring_note(ui, &why);
+            ui.add_space(U * 1.5);
+            if full_button(ui, "Back").clicked() {
+                app.keyring.refresh();
+                return;
+            }
+            app.keyring.stage = Stage::Failed(why);
+        }
+    }
+}
+
+fn keyring_status_rows(ui: &mut egui::Ui, app: &LoginApp) {
+    let report = &app.keyring.report;
+    keyring_row(ui, "TPM 2.0", if report.tpm { "yes" } else { "no" }, report.tpm);
+    keyring_row(
+        ui,
+        "PAM module",
+        if report.module.is_some() { "installed" } else { "missing" },
+        report.module.is_some(),
+    );
+    keyring_row(
+        ui,
+        "Fingerprint login",
+        if report.fingerprint_wired { "wired" } else { "not wired" },
+        report.fingerprint_wired,
+    );
+    keyring_row(
+        ui,
+        "Password login",
+        if report.password_wired { "wired" } else { "not wired" },
+        report.password_wired,
+    );
+}
+
+fn keyring_enabled(ui: &mut egui::Ui, app: &mut LoginApp) {
+    keyring_note(ui, "Your saved passwords open when you touch the sensor.");
+    ui.add_space(U * 1.5);
+
+    let mut action = None;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = U;
-        for (m, label) in [(Mode::Verify, "Verify"), (Mode::Enroll, "Enrol")] {
+        if half_button(ui, "Show key").clicked() {
+            action = Some(Action::Reveal);
+        }
+        if half_button(ui, "Replace key").clicked() {
+            action = Some(Action::Rotate);
+        }
+    });
+
+    if !app.keyring.report.password_wired {
+        ui.add_space(U * 0.75);
+        if full_button(ui, "Unlock on password login too").clicked() {
+            action = Some(Action::WirePassword);
+        }
+    }
+
+    ui.add_space(U * 0.75);
+    if full_button(ui, "Turn off").clicked() {
+        action = Some(Action::Disable);
+    }
+
+    match action {
+        Some(Action::Reveal) => app.keyring.start_reveal(),
+        Some(Action::Rotate) => app.keyring.stage = Stage::ConfirmRotate,
+        Some(Action::WirePassword) => app.keyring.start_wire_password(),
+        Some(Action::Disable) => app.keyring.start_disable(),
+        None => {}
+    }
+}
+
+enum Action {
+    Reveal,
+    Rotate,
+    WirePassword,
+    Disable,
+}
+
+fn keyring_offer(ui: &mut egui::Ui, app: &mut LoginApp) {
+    keyring_status_rows(ui, app);
+    ui.add_space(U * 2.0);
+    if let Some(why) = keyring_tab::ready_error(&app.keyring.report) {
+        keyring_note(ui, &why);
+        return;
+    }
+    keyring_note(
+        ui,
+        "A fingerprint cannot open the keyring on its own. This keeps a secret in the TPM and hands it over when your finger matches.",
+    );
+    ui.add_space(U * 1.5);
+    if primary_button(ui, "Set up", true).clicked() {
+        app.keyring.stage = Stage::Confirm;
+    }
+}
+
+fn keyring_confirm(ui: &mut egui::Ui, app: &mut LoginApp) {
+    keyring_note(
+        ui,
+        "Your account password stops opening the keyring. The TPM secret opens it instead, handed over when your finger matches.",
+    );
+    ui.add_space(U);
+    keyring_note(
+        ui,
+        "You get a recovery key, also written to /root/keyring-key.txt. Without it, a TPM that stops unsealing means the keyring is lost.",
+    );
+    ui.add_space(U * 1.5);
+    let mut also_password = !app.keyring.fingerprint_only;
+    if ui
+        .checkbox(&mut also_password, "Also unlock on password login")
+        .changed()
+    {
+        app.keyring.fingerprint_only = !also_password;
+    }
+    ui.add_space(U);
+    if primary_button(ui, "Continue", true).clicked() {
+        app.keyring.start_provision();
+        return;
+    }
+    ui.add_space(U * 0.5);
+    if full_button(ui, copy::CANCEL).clicked() {
+        return;
+    }
+    app.keyring.stage = Stage::Confirm;
+}
+
+fn keyring_saved(ui: &mut egui::Ui, app: &mut LoginApp, secret: String, mut typed: String) {
+    keyring_secret(ui, &secret);
+    ui.add_space(U);
+    keyring_note(ui, "Type it back to confirm you have saved it.");
+    ui.add_space(U * 0.5);
+    ui.add(
+        egui::TextEdit::singleline(&mut typed)
+            .desired_width(COL)
+            .font(egui::TextStyle::Monospace),
+    );
+    ui.add_space(U);
+    let matches = typed.trim() == secret;
+    if primary_button(ui, "I have saved it", matches).clicked() {
+        app.keyring.stage = Stage::Rekey {
+            secret,
+            password: String::new(),
+        };
+        return;
+    }
+    app.keyring.stage = Stage::Saved { secret, typed };
+}
+
+fn keyring_rekey(ui: &mut egui::Ui, app: &mut LoginApp, secret: String, mut password: String) {
+    keyring_note(
+        ui,
+        "Your keyring's current password, which is your account password unless you have changed it. This is the keyring's, not a login.",
+    );
+    ui.add_space(U);
+    ui.add(
+        egui::TextEdit::singleline(&mut password)
+            .desired_width(COL)
+            .password(true),
+    );
+    ui.add_space(U);
+    if primary_button(ui, "Finish", !password.is_empty()).clicked() {
+        app.keyring.start_rekey(secret, password);
+        return;
+    }
+    app.keyring.stage = Stage::Rekey { secret, password };
+}
+
+fn keyring_secret(ui: &mut egui::Ui, secret: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(secret).monospace().size(11.0)).wrap());
+    ui.add_space(U * 0.75);
+    if full_button(ui, "Copy").clicked() {
+        ui.ctx().copy_text(secret.to_string());
+    }
+}
+
+/// Equal treatment, active one filled.
+fn segmented(ui: &mut egui::Ui, mode: &mut Mode, enabled: bool) {
+    let seg = (COL - U * 2.0) / 3.0;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = U;
+        for (m, label) in [
+            (Mode::Verify, "Verify"),
+            (Mode::Enroll, "Enrol"),
+            (Mode::Keyring, "Keyring"),
+        ] {
             let active = *mode == m;
             let text = if active {
                 egui::RichText::new(label).color(ui.visuals().strong_text_color())
@@ -896,7 +1204,9 @@ fn segmented(ui: &mut egui::Ui, mode: &mut Mode, enabled: bool) {
 /// The one accent-filled action. Inputs stay neutral.
 fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     let button = egui::Button::new(
-        egui::RichText::new(text).color(egui::Color32::WHITE).strong(),
+        egui::RichText::new(text)
+            .color(egui::Color32::WHITE)
+            .strong(),
     )
     .fill(ACCENT)
     .min_size(egui::vec2(COL, U * 5.5));
@@ -928,14 +1238,19 @@ fn labelled_combo(
 
 /// Drawn, not a glyph: the default font lacks a filled dot.
 fn dot_mark(ui: &mut egui::Ui, color: egui::Color32, radius: f32) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(radius * 2.0, radius * 2.0),
-        egui::Sense::hover(),
-    );
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(radius * 2.0, radius * 2.0), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), radius, color);
 }
 
 /// Neutral full-width action, for anything that is not the primary one.
+fn half_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.add_sized(
+        egui::vec2((COL - U) / 2.0, U * 5.5),
+        egui::Button::new(egui::RichText::new(text)),
+    )
+}
+
 fn full_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add_sized(
         egui::vec2(COL, U * 5.5),

@@ -5,6 +5,12 @@ case "$1" in
 configure)
     install -d -m 0700 /var/lib/elanprint
 
+    # the sealed keyring secret is readable by root only
+    install -d -m 0700 /var/lib/elanprint-rs
+    if [ -f /var/lib/elanprint-rs/keyring.cred ]; then
+        chmod 0600 /var/lib/elanprint-rs/keyring.cred
+    fi
+
     if [ -f /etc/systemd/system/elanprintd.service ]; then
         echo "elanprint-rs: /etc/systemd/system/elanprintd.service is from a" >&2
         echo "  source install and overrides this package's unit. Remove it" >&2

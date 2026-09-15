@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/elanprint-usb", "crates/elanprint-proto", "crates/elanprint-store", "crates/elanprint-algo", "crates/elanprint-cli", "crates/elanprintd", "crates/elanprint-login"]
+members = ["crates/elanprint-usb", "crates/elanprint-proto", "crates/elanprint-store", "crates/elanprint-algo", "crates/elanprint-cli", "crates/elanprintd", "crates/elanprint-login", "crates/pam-elanprint-keyring", "crates/elanprint-keyring-setup"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,12 +21,14 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 egui = "0.32"
 futures-util = "0.3"
+zeroize = "1"
 
 elanprint-usb = { path = "crates/elanprint-usb" }
 elanprint-proto = { path = "crates/elanprint-proto" }
 elanprint-store = { path = "crates/elanprint-store" }
 elanprint-algo = { path = "crates/elanprint-algo" }
 elanprintd = { path = "crates/elanprintd" }
+elanprint-keyring-setup = { path = "crates/elanprint-keyring-setup" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

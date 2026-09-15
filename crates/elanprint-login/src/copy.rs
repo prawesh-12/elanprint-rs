@@ -50,3 +50,14 @@ pub fn finger_label(name: &str) -> String {
         name.to_string()
     }
 }
+
+pub const KEYRING_ON: &str = "Keyring unlocks with your finger";
+pub const KEYRING_OFF: &str = "Keyring asks for a password";
+pub const KEYRING_CONFIRM: &str = "Read this before you continue";
+pub const KEYRING_WORKING: &str = "Waiting for authorisation";
+pub const KEYRING_SAVE_CODE: &str = "Save your recovery code";
+pub const KEYRING_REKEY: &str = "Last step";
+pub const KEYRING_KEY: &str = "Your recovery key";
+pub const KEYRING_REPLACE: &str = "Replace the key";
+pub const KEYRING_REPLACED: &str = "New key in place";
+pub const KEYRING_DONE: &str = "Done, log out and back in";
