@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/elanprint-usb", "crates/elanprint-proto", "crates/elanprint-store", "crates/elanprint-algo", "crates/elanprint-cli", "crates/elanprintd", "crates/elanprint-login", "crates/pam-elanprint-keyring", "crates/elanprint-keyring-setup"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 
