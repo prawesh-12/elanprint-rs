@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=elanprint-rs
+GenericName=Fingerprint Enrolment
+Comment=Enrol and test fingerprints on the ELAN 04f3:0c90 sensor
+Exec=/usr/bin/elanprint-rs
+Icon=elanprint-rs
+Terminal=false
+Categories=Settings;HardwareSettings;Security;
+Keywords=fingerprint;biometric;enrol;enroll;sensor;elan;
+StartupNotify=true
+StartupWMClass=elanprint-rs

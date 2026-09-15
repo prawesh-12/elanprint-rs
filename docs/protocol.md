@@ -11,7 +11,7 @@ Status values:
 
 An agent may only send commands at `documented` or `confirmed`.
 
-**Primary source:** `depau/elanpoc` (MIT), a PoC for ELAN 04f3:0c4c. Its device list covers 0c00, 0c4c and 0c5e. It does **not** list 0c90. Everything below is therefore `documented` from that family, and must be promoted to `confirmed` one command at a time on this device per Phase 2 of plan.md.
+**Primary source:** `depau/elanpoc` (MIT), a PoC for ELAN 04f3:0c4c. Its device list covers 0c00, 0c4c and 0c5e. It does **not** list 0c90. Everything below therefore starts as `documented` from that family, and is promoted to `confirmed` one command at a time on this device.
 
 ---
 
@@ -82,34 +82,34 @@ Notes per command:
 
 ### `fw_ver`
 
-Response is two bytes: major, minor. Use this as the Phase 2 GO/NO-GO probe.
+Response is two bytes: major, minor. Use this as the GO/NO-GO probe.
 
-**Observed on 0c90, 2026-09-14:** `01 08`, so firmware 1.8. Matches `bcdDevice
+**Observed on 0c90:** `01 08`, so firmware 1.8. Matches `bcdDevice
 0108` in the device descriptor.
 
 ### `sensor_size`
 
 Response is 4 bytes. Width is `byte0 + 1`, height is `byte2 + 1`. The off-by-one is real, not a typo.
 
-**Observed on 0c90, 2026-09-14:** `4f 00 4f 00`, so 80 x 80. Bytes 1 and 3 are
+**Observed on 0c90:** `4f 00 4f 00`, so 80 x 80. Bytes 1 and 3 are
 zero, consistent with two little endian 16 bit fields.
 
 ### `enrolled_num`
 
 Byte 1 of the response is the count of enrolled fingers.
 
-**Observed on 0c90, 2026-09-14:** `40 00`, so 0 enrolled. Byte 0 is `0x40`,
-the command's first byte, so it reads as an echo rather than data. **This is the one to use.** `enrolled_count` in plan.md and in the CLI refers to this command; the two names mean the same thing.
+**Observed on 0c90:** `40 00`, so 0 enrolled. Byte 0 is `0x40`,
+the command's first byte, so it reads as an echo rather than data. **This is the one to use.** `enrolled_count` in the CLI refers to this command; the two names mean the same thing.
 
 ### `enrolled_num1`
 
-Present in the source's command table but never called by it. Purpose and response layout unknown. `status: documented` here means the bytes are transcribed accurately, not that the command is understood. **Do not send it.** If you have a reason to, that is a QUESTIONS.md entry first.
+Present in the source's command table but never called by it. Purpose and response layout unknown. `status: documented` here means the bytes are transcribed accurately, not that the command is understood. **Do not send it.**
 
 ### `finger_info`
 
 Payload is a single byte finger id. Response is 70 bytes.
 
-**Observed on 0c90, 2026-09-14:** ids 0 to 9 all returned **2 bytes, `40 ff`**,
+**Observed on 0c90:** ids 0 to 9 all returned **2 bytes, `40 ff`**,
 never 70, with `enrolled_num` at 0. 0c90 answers 2 bytes for an empty slot, so
 the reader must accept the short form and not treat it as a failed read. A 70
 byte record is still expected for an occupied slot, which is unverified until
@@ -121,7 +121,7 @@ something is enrolled.
 
 Waits for a touch, so use a long timeout and read on `0x84`. Byte 1 is the matched finger id on success. `0xfd` means the finger is not enrolled, which is a **normal expected value**, not a failure, during the pre-enroll check.
 
-**Observed on 0c90, 2026-09-14:** `40 fd` on `0x84` at touch latency, byte 0 is
+**Observed on 0c90:** `40 fd` on `0x84` at touch latency, byte 0 is
 the `0x40` echo. The endpoint is as documented.
 
 **Precondition, not in the source:** `verify` only answers if `enrolled_num`
@@ -134,7 +134,7 @@ over three silent runs and one successful one, all captured. See
 
 Payload is 4 bytes: `new_finger_id`, `total_attempts`, `attempts_done`, `0`. The source uses 8 total attempts. Called in a loop, once per touch. Byte 1 of the response is 0 on a good sample, otherwise an error code. `0xdd` means the slot limit is reached, and the loop must stop rather than retry.
 
-**Observed on 0c90, 2026-09-14:** counters 00 to 07 each answered `40 00` on
+**Observed on 0c90:** counters 00 to 07 each answered `40 00` on
 `0x84` in one armed claim. Retries `0x43`, `0x44`, `0x41` held the counter and
 were resent unchanged. A 12.7 second mid-loop pause needed no re-arm.
 
@@ -142,7 +142,7 @@ were resent unchanged. A 12.7 second mid-loop pause needed no re-arm.
 
 Run after the last sample, before commit. 3 byte response. If byte 1 is nonzero, byte 2 holds the id of the finger this one collides with, and enrollment must abort.
 
-**Observed on 0c90, 2026-09-14:** `40 00 ff`. Byte 1 is 0, no clash. Byte 2 is
+**Observed on 0c90:** `40 00 ff`. Byte 1 is 0, no clash. Byte 2 is
 `0xff` anyway, so byte 2 alone means nothing.
 
 ### `commit`
@@ -158,7 +158,7 @@ The sub id byte is computed as `0xf0 | (finger_id + 5)`.
 
 Record the exact bytes the chip returns after commit, including anything that arrives after the 2 bytes you expected, and put it in `findings.md`.
 
-**Observed on 0c90, 2026-09-14:** `40 00` on `0x83`, 102 ms after the write.
+**Observed on 0c90:** `40 00` on `0x83`, 102 ms after the write.
 A 500 ms trailing read got nothing. Clean, no cancel needed.
 
 ### `delete`
@@ -204,7 +204,7 @@ Status byte values. High nibble zero means no error.
 | `0xfd` | Finger not enrolled              |
 | `0xfe` | Finger area not enough           |
 
-Mapping to fprintd D-Bus status strings in Phase 6:
+Mapping to fprintd D-Bus status strings:
 
 - `0x41` to `0x44` map to `enroll-retry-center-finger` / `verify-retry-scan-too-short`. These are **retries**, not failures.
 - `0xfb` and `0xfe` are retries too.

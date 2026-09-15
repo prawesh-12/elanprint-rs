@@ -9,9 +9,9 @@ VID=04f3
 PID=0c90
 
 [ "$(id -u)" = "0" ] || { echo "run with sudo"; exit 1; }
-for b in elanprintd elanprint-cli; do
+for b in elanprintd elanprint-cli elanprint-login; do
     [ -f "target/release/$b" ] || {
-        echo "build first: cargo build --release -p elanprintd -p elanprint-cli"
+        echo "build first: cargo build --release --workspace"
         exit 1
     }
 done
@@ -69,6 +69,23 @@ install -D -m 0755 target/release/elanprintd /usr/libexec/elanprintd
 echo "  cli    -> /usr/libexec/elanprint-cli"
 install -D -m 0755 target/release/elanprint-cli /usr/libexec/elanprint-cli
 
+# on X11 the window manager takes WM_CLASS from the binary name, so the
+# installed name has to match StartupWMClass in the desktop entry
+echo "  app    -> /usr/bin/elanprint-rs"
+install -D -m 0755 target/release/elanprint-login /usr/bin/elanprint-rs
+
+echo "  icons  -> /usr/share/icons/hicolor"
+for s in 48 64 128 256; do
+    install -D -m 0644 "assets/icon-$s.png" \
+        "/usr/share/icons/hicolor/${s}x${s}/apps/elanprint-rs.png"
+done
+install -D -m 0644 desktop/elanprint-rs.desktop \
+    /usr/share/applications/elanprint-rs.desktop
+command -v gtk-update-icon-cache >/dev/null 2>&1 \
+    && gtk-update-icon-cache -qf /usr/share/icons/hicolor 2>/dev/null || true
+command -v update-desktop-database >/dev/null 2>&1 \
+    && update-desktop-database -q /usr/share/applications 2>/dev/null || true
+
 # The store starts empty. Enrolling writes it. Never seeded from anywhere.
 echo "  store  -> /var/lib/elanprint/"
 install -d -m 0700 /var/lib/elanprint
@@ -114,6 +131,9 @@ check() {
 
 [ -x /usr/libexec/elanprintd ]; check $? "/usr/libexec/elanprintd is present and executable"
 [ -x /usr/libexec/elanprint-cli ]; check $? "/usr/libexec/elanprint-cli is present and executable"
+[ -x /usr/bin/elanprint-rs ]; check $? "/usr/bin/elanprint-rs is present and executable"
+[ -f /usr/share/applications/elanprint-rs.desktop ]; check $? "desktop entry is installed"
+[ -f /usr/share/icons/hicolor/256x256/apps/elanprint-rs.png ]; check $? "icon is installed"
 [ -f /etc/systemd/system/elanprintd.service ]; check $? "unit file is installed"
 [ -d /var/lib/elanprint ]; check $? "store directory exists"
 

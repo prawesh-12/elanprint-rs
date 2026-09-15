@@ -64,6 +64,17 @@ fi
 rm -f /usr/libexec/elanprintd
 echo "  binary removed"
 
+rm -f /usr/bin/elanprint-rs
+rm -f /usr/share/applications/elanprint-rs.desktop
+for s in 48 64 128 256; do
+    rm -f "/usr/share/icons/hicolor/${s}x${s}/apps/elanprint-rs.png"
+done
+command -v gtk-update-icon-cache >/dev/null 2>&1 \
+    && gtk-update-icon-cache -qf /usr/share/icons/hicolor 2>/dev/null || true
+command -v update-desktop-database >/dev/null 2>&1 \
+    && update-desktop-database -q /usr/share/applications 2>/dev/null || true
+echo "  app, desktop entry and icons removed"
+
 if [ -f /etc/udev/rules.d/70-elanprint.rules ]; then
     rm -f /etc/udev/rules.d/70-elanprint.rules
     udevadm control --reload-rules

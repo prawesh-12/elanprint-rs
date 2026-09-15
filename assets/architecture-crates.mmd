@@ -1,0 +1,34 @@
+flowchart TD
+    subgraph BIN["Binaries"]
+        D["elanprintd<br/>system daemon"]
+        CLI["elanprint-cli<br/>developer tool"]
+        GUI["elanprint-login<br/>desktop app"]
+    end
+
+    subgraph PURE["Pure crates, no I/O, tested without a sensor"]
+        PROTO["elanprint-proto<br/>encode, parse<br/>enrol state machine"]
+        STORE["elanprint-store<br/>name to slot<br/>slot policy"]
+        ALGO["elanprint-algo<br/>session policy<br/>status mapping"]
+    end
+
+    USB["elanprint-usb<br/>open, claim, bulk transfers, timeouts<br/>the only crate that touches the device"]
+
+    D --> USB
+    D --> PROTO
+    D --> STORE
+    D --> ALGO
+    CLI --> USB
+    CLI --> PROTO
+    CLI --> STORE
+    GUI --> ALGO
+    STORE --> PROTO
+    ALGO --> PROTO
+    PROTO -.->|"forbidden by design"| USB
+
+    linkStyle 10 stroke:#e25656,stroke-dasharray:4
+    classDef box fill:#eef2ff,stroke:#6366f1,color:#111827
+    classDef hw fill:#fff7ed,stroke:#ea580c,color:#111827
+    class D,CLI,GUI,PROTO,STORE,ALGO box
+    class USB hw
+    style BIN fill:#ffffff,stroke:#cbd5e1
+    style PURE fill:#ffffff,stroke:#cbd5e1

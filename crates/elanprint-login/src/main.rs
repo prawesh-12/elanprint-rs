@@ -15,6 +15,8 @@ mod sensor;
 
 use app::LoginApp;
 
+const ICON: &[u8] = include_bytes!("../../../assets/icon-256.png");
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
@@ -26,11 +28,19 @@ fn main() -> Result<()> {
     let handle = runtime.handle().clone();
     let _guard = runtime.enter();
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([400.0, 600.0])
+        .with_resizable(false)
+        .with_maximize_button(false)
+        .with_app_id(copy::TITLE);
+    // 256 is the largest size any shell asks for, and the source art would
+    // decode to megabytes of RGBA for no gain.
+    match eframe::icon_data::from_png_bytes(ICON) {
+        Ok(icon) => viewport = viewport.with_icon(icon),
+        Err(e) => tracing::warn!("window icon did not load: {e}"),
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 600.0])
-            .with_resizable(false)
-            .with_maximize_button(false),
+        viewport,
         ..Default::default()
     };
     let run = eframe::run_native(

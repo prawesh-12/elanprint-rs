@@ -1,6 +1,6 @@
 //! Every user-facing string in one place.
 
-pub const TITLE: &str = "elanprint login";
+pub const TITLE: &str = "elanprint-rs";
 pub const CONNECTED: &str = "Connected";
 pub const NOT_CONNECTED: &str = "Not connected";
 pub const READER_NOT_FOUND: &str = "Reader not found";

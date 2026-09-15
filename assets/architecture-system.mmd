@@ -1,0 +1,43 @@
+flowchart TD
+    subgraph LOGIN["Login path, uid 0"]
+        GREETER["GDM greeter<br/>and lock screen"]
+        PAM["pam_fprintd.so<br/>in gdm-session-worker"]
+    end
+
+    subgraph SESSION["User session"]
+        GUI["elanprint-rs<br/>enrol and self-test"]
+        CLI["elanprint-cli<br/>bring-up and debug"]
+    end
+
+    subgraph SERVICE["System service, uid 0"]
+        DAEMON["elanprintd<br/>owns net.reactivated.Fprint<br/>one claim, one operation"]
+        STORE[("prints.json<br/>/var/lib/elanprint, 0600 root<br/>finger name to slot id")]
+    end
+
+    subgraph KERNEL["Kernel"]
+        UDEV["udev<br/>70-elanprint.rules"]
+        USBFS["usbfs<br/>/dev/bus/usb"]
+    end
+
+    subgraph HW["Device"]
+        SENSOR["ELAN 04f3:0c90<br/>Cortex-M4, writable flash<br/>enrol and match on chip"]
+    end
+
+    GREETER -->|"gdm-fingerprint"| PAM
+    PAM -->|"D-Bus, caller uid 0"| DAEMON
+    GUI -->|"D-Bus, caller owns the print"| DAEMON
+    DAEMON -->|"name to slot id"| STORE
+    DAEMON -->|"claims interface 0"| USBFS
+    CLI -.->|"daemon stopped only"| USBFS
+    UDEV -.->|"uaccess"| USBFS
+    USBFS <-->|"bulk 0x01 out<br/>0x82, 0x83, 0x84 in"| SENSOR
+
+    classDef box fill:#eef2ff,stroke:#6366f1,color:#111827
+    classDef chip fill:#1f2937,stroke:#111827,color:#ffffff
+    class GREETER,PAM,GUI,CLI,DAEMON,STORE,UDEV,USBFS box
+    class SENSOR chip
+    style LOGIN fill:#ffffff,stroke:#cbd5e1
+    style SESSION fill:#ffffff,stroke:#cbd5e1
+    style SERVICE fill:#ffffff,stroke:#cbd5e1
+    style KERNEL fill:#ffffff,stroke:#cbd5e1
+    style HW fill:#ffffff,stroke:#cbd5e1

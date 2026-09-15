@@ -1,0 +1,37 @@
+sequenceDiagram
+    autonumber
+    actor U as Person at the greeter
+    participant G as GDM
+    participant P as pam_fprintd<br/>uid 0
+    participant D as elanprintd
+    participant S as prints.json
+    participant C as sensor
+
+    U->>G: picks an account
+    G->>P: gdm-fingerprint PAM stack
+    P->>D: Claim alice
+    activate D
+    D->>D: caller uid via GetConnectionUnixUser
+    Note over D: uid 0 or the owner of the prints,<br/>otherwise PermissionDenied
+    D->>C: 40 ff 04  enrolled_num
+    C-->>D: 40 01
+    Note over D,C: arming. Without this every<br/>touch-wait stays silent forever
+
+    P->>D: VerifyStart any
+    D->>S: which slots does alice own?
+    S-->>D: slot 0, left index finger
+    U->>C: presents a finger
+    D->>C: 40 ff 03  verify
+    Note over C: matched against every<br/>template in flash, no id is sent
+    C-->>D: 40 00, slot 0 matched
+
+    alt slot 0 is one of alice's
+        D-->>P: verify-match
+        P-->>G: session opens
+    else slot belongs to another user, or to nobody
+        D-->>P: verify-no-match
+        Note over D: an orphaned template<br/>authenticates nobody
+    end
+
+    P->>D: Release
+    deactivate D
