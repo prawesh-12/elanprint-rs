@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
 <policyconfig>
-  <vendor>elanmoc-rs</vendor>
+  <vendor>elanprint-rs</vendor>
   <icon_name>fingerprint</icon_name>
   <action id="net.reactivated.fprint.device.verify">
     <description>Verify a fingerprint</description>

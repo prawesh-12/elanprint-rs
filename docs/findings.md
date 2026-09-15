@@ -31,16 +31,16 @@ Device:
 
 Endpoints. The interface declares `bNumEndpoints 8`, not 4:
 
-| Address | Dir | Type | wMaxPacketSize | bInterval |
-| ------- | --- | ---- | -------------- | --------- |
-| `0x01` | OUT | Bulk | 64 | 1 |
-| `0x02` | OUT | Bulk | 64 | 1 |
-| `0x03` | OUT | Bulk | 64 | 1 |
-| `0x04` | OUT | Bulk | 64 | 1 |
-| `0x81` | IN  | Bulk | 64 | 1 |
-| `0x82` | IN  | Bulk | 64 | 1 |
-| `0x83` | IN  | Bulk | 64 | 1 |
-| `0x84` | IN  | Bulk | 64 | 1 |
+| Address  | Dir | Type | wMaxPacketSize | bInterval |
+| -------- | --- | ---- | -------------- | --------- |
+| `0x01` | OUT | Bulk | 64             | 1         |
+| `0x02` | OUT | Bulk | 64             | 1         |
+| `0x03` | OUT | Bulk | 64             | 1         |
+| `0x04` | OUT | Bulk | 64             | 1         |
+| `0x81` | IN  | Bulk | 64             | 1         |
+| `0x82` | IN  | Bulk | 64             | 1         |
+| `0x83` | IN  | Bulk | 64             | 1         |
+| `0x84` | IN  | Bulk | 64             | 1         |
 
 Difference from `docs/protocol.md`: the protocol table lists four endpoints
 (`0x01` OUT, `0x82`, `0x83`, `0x84` IN). All four exist on 0c90 at the stated
@@ -86,13 +86,13 @@ existing rule under `/etc/udev/rules.d` or `/usr/lib/udev/rules.d` mentions
 `04f3`. The session is local and active (`loginctl`: `Remote=no`, `Active=yes`),
 which is what `uaccess` requires.
 
-`udevadm verify udev/70-elanmoc.rules` passes, 1 checked, 0 failed.
+`udevadm verify udev/70-elanprint.rules` passes, 1 checked, 0 failed.
 
 The rule is not installed. Installing it needs user approval.
 
 ## 2026-09-14 Task 0.2 udev rule installed
 
-Installed with `tee` (`cp` is not permitted). `/etc/udev/rules.d/70-elanmoc.rules`
+Installed with `tee` (`cp` is not permitted). `/etc/udev/rules.d/70-elanprint.rules`
 md5 `196afa25e9050c4d2eaa7913057b6251`, identical to the repo copy.
 
 Before: `crw-rw-r-- root root 0664`, no ACL.
@@ -138,7 +138,7 @@ resolved against a capture.
 ## 2026-09-14 Phase 2, four read-only commands confirmed on 0c90
 
 No usbmon capture (needs root, see above). Evidence is the transport's own hex
-log of each transfer, at `RUST_LOG=elanmoc_usb=debug`. Every value below was
+log of each transfer, at `RUST_LOG=elanprint_usb=debug`. Every value below was
 read three or more times and did not change.
 
 ### fw_ver
@@ -502,11 +502,11 @@ touch latency.
 `verify` (`40 ff 03`) sent immediately after open and claim, with no other
 command in between.
 
-| Run | Wait | Reads posted | Touch | Result |
-| --- | ---- | ------------ | ----- | ------ |
-| 1 | 120 s | `0x84` | not confirmed | nothing |
-| 2 | 120 s | `0x84` | intended, unverifiable | nothing |
-| 3 | 180 s | `0x83` **and** `0x84` | **confirmed by the user** | nothing |
+| Run | Wait  | Reads posted                    | Touch                           | Result  |
+| --- | ----- | ------------------------------- | ------------------------------- | ------- |
+| 1   | 120 s | `0x84`                        | not confirmed                   | nothing |
+| 2   | 120 s | `0x84`                        | intended, unverifiable          | nothing |
+| 3   | 180 s | `0x83` **and** `0x84` | **confirmed by the user** | nothing |
 
 In every case the OUT transfer on `0x01` completed with status 0, so the command
 reached the chip. Every IN URB stayed pending for the full timeout and ended at
@@ -620,7 +620,7 @@ The only route to the limit that `docs/protocol.md` offers is enrolling until
 
 One claim, armed once with `enrolled_num`, never re-armed. Capture
 `/tmp/enroll3a.pcapng` (bus 1, device 2, dumpcap as uid 1000) and
-`RUST_LOG=elanmoc_usb=debug` log agree on every byte. Whole run took 22 seconds.
+`RUST_LOG=elanprint_usb=debug` log agree on every byte. Whole run took 22 seconds.
 
 Method note, stated plainly: the user was at the sensor and touching throughout
 (move-hint retries and sub-second captures prove a live finger), but no
@@ -698,7 +698,7 @@ matches on the user's order.
 
 ## 2026-09-14 Daemon serves on the session bus, property names fixed
 
-`elanmocd` ran unprivileged with `ELANMOC_BUS=session` and answered a remote
+`elanprintd` ran unprivileged with `ELANPRINT_BUS=session` and answered a remote
 `busctl --user` sequence: `GetDevices` lists Device/0, `Claim` opens and arms
 (`enrolled_num` `40 01`, count persists from GATE 3a), `num-enroll-stages`
 reads 8 while claimed and -1 after `Release`.
@@ -726,7 +726,7 @@ the moment a USB transfer sleeps.
 
 ## 2026-09-14 Live sync against count 0, corrupt store pruned
 
-Before GATE 3a, device count 0. `elanmoc-cli sync --store` with a missing
+Before GATE 3a, device count 0. `elanprint-cli sync --store` with a missing
 file: "store holds nothing". With `{"alice":{"right-index-finger":1}}`:
 reported stale ("device holds nothing, enrolled_num is 0"), and `--prune`
 removed it, leaving `{}`. Ambiguous-slot behavior is unit tests only until a
@@ -806,11 +806,11 @@ not a byte record, and is labelled as such.
 
 Daemon logs in `/tmp`, all timestamps UTC, local is +0530:
 
-| Log                    | Time     | Arming read       | Count |
-| ---------------------- | -------- | ----------------- | ----- |
-| `elanmocd-audit.log`   | 15:24:59 | `40 ff 04` `40 01` | 1     |
-| `elanmocd-step6.log`   | 16:29:23 | `40 ff 04` `40 01` | 1     |
-| `elanmocd-diag.log`    | 17:11:59 | `40 ff 04` `40 00` | 0     |
+| Log                    | Time     | Arming read            | Count |
+| ---------------------- | -------- | ---------------------- | ----- |
+| `elanmocd-audit.log` | 15:24:59 | `40 ff 04` `40 01` | 1     |
+| `elanmocd-step6.log` | 16:29:23 | `40 ff 04` `40 01` | 1     |
+| `elanmocd-diag.log`  | 17:11:59 | `40 ff 04` `40 00` | 0     |
 
 So the count went 1 to 0 between 16:29:23 and 17:11:59 UTC (21:59 and 22:41
 local). `tools/run.sh` ran across that window, 22:00:33 to about 22:20
@@ -841,7 +841,7 @@ workspace, and enroll could not reach the wire.
 
 Ruled out as the cause. `Worker::delete_finger` reads the slot from the store
 and returns `NotEnrolled` when there is no entry, so an empty store cannot
-produce an erase. `elanmoc-cli sync --prune` writes the store only; it has no
+produce an erase. `elanprint-cli sync --prune` writes the store only; it has no
 device-write path and the CLI has no delete subcommand at all. The direction
 of the dependency is the opposite of the theory: the store entry is what
 *enabled* the delete.
@@ -852,7 +852,7 @@ of the dependency is the opposite of the theory: the store entry is what
 slots are occupied, with `finger_info` as a veto. On 0c90 that veto never
 fires: an occupied slot answers `40 ff`, the same two bytes an empty one
 gives, already recorded above under `finger_info`. With an empty store, which
-is the normal state for the root daemon (`/var/lib/elanmoc` does not exist on
+is the normal state for the root daemon (`/var/lib/elanprint` does not exist on
 this machine, so no save has ever succeeded there), `free_slot` returned 0 on
 every call. The next successful enroll would have written over slot 0 to match
 an empty file.
@@ -960,12 +960,12 @@ emitted a terminal status. That is D-026 answering on real hardware.
 
 ### Hold checks, no touches at any point
 
-| After                    | `enrolled_num` | Count |
-| ------------------------ | -------------- | ----- |
-| the enrol                | `40 01`        | 1     |
-| a daemon restart         | `40 01`        | 1     |
-| five claim/release cycles| `40 01`        | 1     |
-| a CLI sync               | `40 01`        | 1     |
+| After                     | `enrolled_num` | Count |
+| ------------------------- | ---------------- | ----- |
+| the enrol                 | `40 01`        | 1     |
+| a daemon restart          | `40 01`        | 1     |
+| five claim/release cycles | `40 01`        | 1     |
+| a CLI sync                | `40 01`        | 1     |
 
 `sync` reported the entry `unconfirmed` ("2 byte form, empty and invalid read
 alike") and pruned nothing, which is the rule working: one read never proves
@@ -1028,18 +1028,18 @@ with eight empty dots. The sensor was working the whole time.
 Probed on the session bus, no touch needed. With a claim held and a `verify`
 running, so the spawned task holds the worker mutex:
 
-| Read                        | Before   | After   |
-| --------------------------- | -------- | ------- |
-| `num-enroll-stages`, idle   | `8`      | `8`     |
-| `num-enroll-stages`, running| timeout  | `8`     |
-| `finger-needed`, running    | timeout  | `true`  |
-| second `EnrollStart`        | timeout  | `net.reactivated.Fprint.Error.AlreadyInUse` |
+| Read                           | Before  | After                                         |
+| ------------------------------ | ------- | --------------------------------------------- |
+| `num-enroll-stages`, idle    | `8`   | `8`                                         |
+| `num-enroll-stages`, running | timeout | `8`                                         |
+| `finger-needed`, running     | timeout | `true`                                      |
+| second`EnrollStart`          | timeout | `net.reactivated.Fprint.Error.AlreadyInUse` |
 
 Cause: `EnrollStart` spawns a task that holds `Mutex<Worker>` until the
 operation ends, which is minutes while a finger is awaited. Both property
 getters and `Device::start_op` locked the same mutex.
 
-`elanmoc-login::client::enroll` called `Claim`, `EnrollStart`, then
+`elanprint-login::client::enroll` called `Claim`, `EnrollStart`, then
 `stages()`, then `receive_signal("EnrollStatus")`. The `stages()` call
 blocked on the mutex the enrol itself held, so `receive_signal` was never
 reached. The enrol ran on the chip with no subscriber. Deadlock by data
@@ -1062,11 +1062,11 @@ client operations subscribe before they start.
 Installed the daemon as a system service and verified through it, as root on
 the system bus, with captures. `40 ff 04` armed at `40 02` every run.
 
-| Touch       | Reply on `0x84` | Matched slot | Latency |
-| ----------- | --------------- | ------------ | ------- |
-| left index  | `40 00`         | 0            | 19.0 s  |
-| left index  | `40 00`         | 0            | 6.7 s   |
-| right index | `40 01`         | 1            | 5.6 s   |
+| Touch       | Reply on`0x84` | Matched slot | Latency |
+| ----------- | ---------------- | ------------ | ------- |
+| left index  | `40 00`        | 0            | 19.0 s  |
+| left index  | `40 00`        | 0            | 6.7 s   |
+| right index | `40 01`        | 1            | 5.6 s   |
 
 Slot 1 is real. It was written by the first multi-slot enrol this project has
 done, its capture was lost, and until now it was evidenced only by
@@ -1096,7 +1096,7 @@ wanting a specific finger has to compare the returned id itself.
 
 ## 2026-09-15 GATE 7: fingerprint login works, no PAM file was edited
 
-`elanmocd` installed as a system service, running as root, owning
+`elanprintd` installed as a system service, running as root, owning
 `net.reactivated.Fprint`. `fprintd.service` masked. Nothing under
 `/etc/pam.d` was changed.
 
@@ -1148,7 +1148,7 @@ lockout risk in CLAUDE.md section 7 was never taken on.
   machine, because a re-claim by the same user re-arms, but a different user
   would get `Busy` until the daemon restarts.
 - The daemon holds USB interface 0 for its lifetime once claimed, so
-  `elanmoc-cli` and `tools/run.sh` fail with "Device or resource busy" while
+  `elanprint-cli` and `tools/run.sh` fail with "Device or resource busy" while
   the service is running.
 - `sudo` still uses `common-auth`, which `gdm-fingerprint` does not cover, so
   sudo does not take a fingerprint. Out of scope by the user's order.

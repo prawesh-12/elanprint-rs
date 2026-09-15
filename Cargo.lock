@@ -842,22 +842,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "elanmoc-algo"
+name = "elanprint-algo"
 version = "0.1.0"
 dependencies = [
- "elanmoc-proto",
+ "elanprint-proto",
  "thiserror 1.0.69",
 ]
 
 [[package]]
-name = "elanmoc-cli"
+name = "elanprint-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "elanmoc-proto",
- "elanmoc-store",
- "elanmoc-usb",
+ "elanprint-proto",
+ "elanprint-store",
+ "elanprint-usb",
  "tokio",
  "tokio-util",
  "tracing",
@@ -865,13 +865,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "elanmoc-login"
+name = "elanprint-login"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "eframe",
  "egui",
- "elanmoc-algo",
+ "elanprint-algo",
  "futures-util",
  "thiserror 1.0.69",
  "tokio",
@@ -882,7 +882,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "elanmoc-proto"
+name = "elanprint-proto"
 version = "0.1.0"
 dependencies = [
  "serde_json",
@@ -890,17 +890,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "elanmoc-store"
+name = "elanprint-store"
 version = "0.1.0"
 dependencies = [
- "elanmoc-proto",
+ "elanprint-proto",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
 ]
 
 [[package]]
-name = "elanmoc-usb"
+name = "elanprint-usb"
 version = "0.1.0"
 dependencies = [
  "nusb",
@@ -911,14 +911,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "elanmocd"
+name = "elanprintd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "elanmoc-algo",
- "elanmoc-proto",
- "elanmoc-store",
- "elanmoc-usb",
+ "elanprint-algo",
+ "elanprint-proto",
+ "elanprint-store",
+ "elanprint-usb",
  "futures-util",
  "serde_json",
  "thiserror 1.0.69",

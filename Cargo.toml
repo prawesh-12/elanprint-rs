@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/elanmoc-usb", "crates/elanmoc-proto", "crates/elanmoc-store", "crates/elanmoc-algo", "crates/elanmoc-cli", "crates/elanmocd", "crates/elanmoc-login"]
+members = ["crates/elanprint-usb", "crates/elanprint-proto", "crates/elanprint-store", "crates/elanprint-algo", "crates/elanprint-cli", "crates/elanprintd", "crates/elanprint-login"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,11 +22,11 @@ anyhow = "1"
 egui = "0.32"
 futures-util = "0.3"
 
-elanmoc-usb = { path = "crates/elanmoc-usb" }
-elanmoc-proto = { path = "crates/elanmoc-proto" }
-elanmoc-store = { path = "crates/elanmoc-store" }
-elanmoc-algo = { path = "crates/elanmoc-algo" }
-elanmocd = { path = "crates/elanmocd" }
+elanprint-usb = { path = "crates/elanprint-usb" }
+elanprint-proto = { path = "crates/elanprint-proto" }
+elanprint-store = { path = "crates/elanprint-store" }
+elanprint-algo = { path = "crates/elanprint-algo" }
+elanprintd = { path = "crates/elanprintd" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

@@ -1,0 +1,29 @@
+[package]
+name = "elanprintd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "elanprintd"
+path = "src/main.rs"
+
+[dependencies]
+elanprint-usb.workspace = true
+elanprint-proto.workspace = true
+elanprint-store.workspace = true
+elanprint-algo.workspace = true
+anyhow.workspace = true
+futures-util.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+thiserror.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

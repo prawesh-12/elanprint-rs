@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`elanmoc-rs` is a userspace fingerprint driver for the ELAN 04f3:0c90 sensor.
+`elanprint-rs` is a userspace fingerprint driver for the ELAN 04f3:0c90 sensor.
 Pure Rust, no kernel module. Ubuntu 24.04. It talks to real hardware that can be
 destroyed by bad bytes, and it sits on the login path of the machine it runs on.
 
@@ -14,20 +14,20 @@ project being explored.
 
 ```
 crates/
-  elanmoc-usb      transport. open, claim, bulk transfers, timeouts, cancellation
-  elanmoc-proto    pure encode and parse. bytes in, bytes out, no I/O
-  elanmoc-algo     session policy, slot selection, status mapping
-  elanmoc-store    user and finger name to on-chip slot, /var/lib/elanmoc
-  elanmocd         system daemon, owns net.reactivated.Fprint
-  elanmoc-cli      developer tool
-  elanmoc-login    enrolment UI. not an auth surface
+  elanprint-usb      transport. open, claim, bulk transfers, timeouts, cancellation
+  elanprint-proto    pure encode and parse. bytes in, bytes out, no I/O
+  elanprint-algo     session policy, slot selection, status mapping
+  elanprint-store    user and finger name to on-chip slot, /var/lib/elanprint
+  elanprintd         system daemon, owns net.reactivated.Fprint
+  elanprint-cli      developer tool
+  elanprint-login    enrolment UI. not an auth surface
 docs/protocol.md   the command table. nothing reaches the device unless it is here
 docs/findings.md   observed device behaviour, append only
 tools/             dev and install scripts
 systemd/ udev/ polkit/ dbus/   install artefacts
 ```
 
-Dependency direction is one way: `elanmoc-proto` never depends on `elanmoc-usb`.
+Dependency direction is one way: `elanprint-proto` never depends on `elanprint-usb`.
 The CLI and the daemon wire transport to protocol. If a protocol function cannot
 be unit tested without hardware attached, it is in the wrong crate.
 
@@ -55,7 +55,7 @@ If a task needs a command that is not in the table: stop, report the gap, wait.
 Do not work around it.
 
 **The host store is never authoritative over device flash.** A disagreement
-between `/var/lib/elanmoc/prints.json` and the chip is resolved by trusting the
+between `/var/lib/elanprint/prints.json` and the chip is resolved by trusting the
 chip. Deleting a template requires an explicit user delete action and nothing
 else. A sync that erased flash to match an empty store is how a working template
 was lost.
@@ -99,7 +99,7 @@ document, the device is right. Record the difference. Never bend a parser to fit
 | No C dependencies                                                 | `nusb` not `rusb`. No `pam-sys`, no `glib`, no `-sys` crates |
 | No`unwrap()` or `expect()` outside tests                      | Enforced by workspace lint                                             |
 | One`thiserror` enum per crate                                   | `#[from]` upward. No `Box<dyn Error>` in libraries                 |
-| `anyhow` in binaries only                                       | `elanmoc-cli`, `elanmocd`, `elanmoc-login`                       |
+| `anyhow` in binaries only                                       | `elanprint-cli`, `elanprintd`, `elanprint-login`                       |
 | Every USB read has an explicit timeout                            | Per command. Never a global default                                    |
 | Every wait is cancellable                                         | `tokio::select!` against a `CancellationToken`                     |
 | Every spawned operation emits a terminal status on its error path | A silent failure leaves the UI waiting forever. This was a real bug    |
@@ -121,7 +121,7 @@ Before handing work back: `cargo build`, `cargo test`,
   `pam_fprintd` string-matches them. A typo means enrolment hangs with no error.
 - One consumer of the device at a time. Two concurrent operations desync the
   protocol and produce symptoms that look like firmware bugs.
-- The daemon holds USB interface 0 for its lifetime, so `elanmoc-cli` and
+- The daemon holds USB interface 0 for its lifetime, so `elanprint-cli` and
   `tools/run.sh` fail with "Device or resource busy" until the service stops.
   Expected, not a regression.
 
@@ -148,7 +148,7 @@ One task at a time. Report after each. Do not chain work.
 device flash outside an explicit request, anything under `/etc/pam.d`,
 `systemctl mask` or `unmask` (name the unit first), installing a udev rule (show
 it first), adding a dependency, or `sudo` beyond `udevadm`, `tee` to
-`/etc/udev/rules.d/70-elanmoc.rules`, and `modprobe usbmon`.
+`/etc/udev/rules.d/70-elanprint.rules`, and `modprobe usbmon`.
 
 **Never commit.** Stage nothing, tag nothing, amend nothing. The user commits.
 Leave the tree clean and say what changed.

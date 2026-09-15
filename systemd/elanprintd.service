@@ -1,0 +1,14 @@
+[Unit]
+Description=ELAN fingerprint daemon
+After=dbus.service
+Requires=dbus.service
+
+[Service]
+Type=dbus
+BusName=net.reactivated.Fprint
+ExecStart=/usr/libexec/elanprintd
+Restart=on-failure
+Environment=ELANPRINT_STORE=/var/lib/elanprint/prints.json
+
+[Install]
+WantedBy=multi-user.target

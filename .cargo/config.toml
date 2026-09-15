@@ -1,2 +1,2 @@
 [alias]
-login-app = "run -p elanmoc-login"
+login-app = "run -p elanprint-login"

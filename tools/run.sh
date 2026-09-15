@@ -4,9 +4,9 @@
 # system name. The system bus stays untouched until GATE 6.
 # Usage: ./tools/run.sh
 set -e
-cargo build -j 10 -p elanmocd -p elanmoc-login
-export ELANMOC_BUS=session
-export ELANMOC_STORE=/tmp/elanmoc-prints.json
-./target/debug/elanmocd & DAEMON=$!
+cargo build -j 10 -p elanprintd -p elanprint-login
+export ELANPRINT_BUS=session
+export ELANPRINT_STORE=/tmp/elanprint-prints.json
+./target/debug/elanprintd & DAEMON=$!
 trap "kill $DAEMON 2>/dev/null" EXIT INT TERM
-./target/debug/elanmoc-login
+./target/debug/elanprint-login
