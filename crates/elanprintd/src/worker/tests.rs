@@ -41,11 +41,6 @@ impl Fake {
         Self(Arc::new(Mutex::new(wire)))
     }
 
-    /// Replies until the queue runs out, then a transfer fault on every read.
-    fn failing_after(replies: Vec<Vec<u8>>) -> Self {
-        Self::new(replies)
-    }
-
     fn sent(&self) -> Vec<Vec<u8>> {
         match self.0.lock() {
             Ok(w) => w.sent.clone(),
@@ -262,7 +257,7 @@ async fn a_disagreeing_store_never_erases() {
 async fn a_failed_enroll_erases_nothing() {
     let path = store_path("enroll-fail");
     write_store(&path, &[]);
-    let fake = Fake::failing_after(vec![
+    let fake = Fake::new(vec![
         enrolled_num(1),
         vec![0x40, 0xff],
         vec![0x40, 0xdd], // slot limit, a hard failure mid-loop

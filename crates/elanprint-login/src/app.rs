@@ -527,7 +527,6 @@ impl eframe::App for LoginApp {
     }
 }
 
-/// The status line leads. Everything else sits a size below it.
 fn polish(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.text_styles.insert(
@@ -640,7 +639,7 @@ fn stage(ui: &mut egui::Ui, app: &LoginApp, now: Instant) {
     });
 }
 
-/// Name the hardware. Without a daemon this is all the window can say.
+/// Without a daemon, this is all the window can say.
 fn sensor_identity(ui: &mut egui::Ui, found: &Found) {
     match found {
         Found::Supported(s) => {
@@ -1170,7 +1169,7 @@ fn keyring_secret(ui: &mut egui::Ui, secret: &str) {
     }
 }
 
-/// Equal treatment, active one filled.
+/// Segments read equally; only the active one is filled.
 fn segmented(ui: &mut egui::Ui, mode: &mut Mode, enabled: bool) {
     let seg = (COL - U * 2.0) / 3.0;
     ui.horizontal(|ui| {
@@ -1243,7 +1242,7 @@ fn dot_mark(ui: &mut egui::Ui, color: egui::Color32, radius: f32) {
     ui.painter().circle_filled(rect.center(), radius, color);
 }
 
-/// Neutral full-width action, for anything that is not the primary one.
+/// Neutral half-width action, for anything that is not the primary one.
 fn half_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     ui.add_sized(
         egui::vec2((COL - U) / 2.0, U * 5.5),

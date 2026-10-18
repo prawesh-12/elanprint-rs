@@ -9,9 +9,7 @@ const ARCS: usize = 6;
 
 pub struct Mark {
     pub size: f32,
-    /// The whole mark is this one colour.
     pub colour: egui::Color32,
-    /// Opacity multiplier for the pulse.
     pub alpha: f32,
 }
 
@@ -92,7 +90,7 @@ fn fade(color: egui::Color32, factor: f32) -> egui::Color32 {
     color.gamma_multiply(factor.clamp(0.0, 1.0))
 }
 
-/// `steps` points along `sweep` radians from `start`.
+/// `steps` samples along `sweep` radians from `start`.
 fn arc_span(
     center: egui::Pos2,
     radius: f32,

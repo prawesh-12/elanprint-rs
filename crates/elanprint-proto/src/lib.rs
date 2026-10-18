@@ -33,7 +33,6 @@ impl ReplyEndpoint {
 /// enrol that never reaches commit.
 pub const DEFAULT_ENROLL_STAGES: u8 = 8;
 
-/// Prefer [`DEFAULT_ENROLL_STAGES`].
 pub const TOTAL_ENROLL_ATTEMPTS: u8 = DEFAULT_ENROLL_STAGES;
 
 /// Clamped to 1..=32, anything else falls back to the default.
@@ -47,7 +46,7 @@ pub fn enroll_stages() -> u8 {
     }
 }
 
-/// sub id byte for commit
+/// Commit sub id byte, per protocol.md.
 pub fn sub_id(finger_id: u8) -> u8 {
     0xf0 | finger_id.wrapping_add(5)
 }
@@ -161,7 +160,7 @@ impl Command {
         }
     }
 
-    /// no length field on wire
+    /// Expected reply length; no length field on the wire.
     pub fn expected_len(&self) -> usize {
         match self {
             Self::FwVersion | Self::EnrolledNum | Self::Verify => 2,
@@ -197,7 +196,7 @@ impl Command {
         }
     }
 
-    /// timeouts chosen, not measured
+    /// Chosen values, not measured on the hardware.
     pub fn timeout(&self) -> Duration {
         match self {
             Self::FwVersion | Self::SensorSize | Self::EnrolledNum | Self::Abort => {
@@ -314,7 +313,7 @@ pub enum Response {
 }
 
 impl Response {
-    /// finger_info allows 2 byte error form
+    /// finger_info's 2 byte error form still parses.
     pub fn parse(cmd: &Command, raw: &[u8]) -> Result<Self, ProtoError> {
         match cmd {
             Command::FwVersion => {

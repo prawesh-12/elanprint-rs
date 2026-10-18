@@ -77,7 +77,6 @@ impl VerifySession {
         self.selected.as_deref()
     }
 
-    /// Prompts for the first touch.
     pub fn begin(&mut self) -> Action {
         self.state = SessionState::Waiting { failures: 0 };
         Action::Prompt("touch the sensor".to_string())

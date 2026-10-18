@@ -122,7 +122,6 @@ impl Enroll {
         EnrollAction::Send(out)
     }
 
-    /// Returns the first sample command.
     pub fn start(&mut self) -> EnrollAction {
         let cmd = Command::Enroll {
             finger_id: self.slot,

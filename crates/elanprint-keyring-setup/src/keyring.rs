@@ -9,7 +9,7 @@ const SERVICE_IFACE: &str = "org.freedesktop.Secret.Service";
 const INTERNAL_IFACE: &str = "org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface";
 const LOGIN: &str = "/org/freedesktop/secrets/collection/login";
 
-/// The Secret Service secret struct: session, parameters, value, content type.
+/// Secret Service secret struct; field order is wire order.
 #[derive(Serialize, Type)]
 struct Secret<'a> {
     session: ObjectPath<'a>,

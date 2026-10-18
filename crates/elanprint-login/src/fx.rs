@@ -29,7 +29,6 @@ impl Fx {
         }
     }
 
-    /// Restarts the phase.
     pub fn set_pulse(&mut self, pulse: Pulse) {
         self.pulse = pulse;
         self.pulse_start = std::time::Instant::now();

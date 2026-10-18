@@ -198,7 +198,6 @@ where
     result
 }
 
-/// Prints the raw bytes either way.
 async fn send(
     device: &Device,
     cmd: Cmd,
@@ -207,7 +206,7 @@ async fn send(
     send_waiting(device, cmd, cmd.timeout(), cancel).await
 }
 
-/// Same, with the wait overridden. Identical bytes on the wire.
+/// Same as `send`, with the wait overridden. Identical bytes on the wire.
 async fn send_waiting(
     device: &Device,
     cmd: Cmd,

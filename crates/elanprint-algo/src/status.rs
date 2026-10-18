@@ -1,13 +1,12 @@
 //! Chip status bytes to fprintd D-Bus strings.
 //!
 //! Every string comes from `docs/dbus-device.xml`, captured from the
-//! installed fprintd 1.94. `pam_fprintd` string-matches these.
+//! installed fprintd 1.94. `pam_fprintd` string-matches these. Only the
+//! strings this software emits are listed here; the XML has the full set.
 
 use elanprint_proto::{EnrollError, Retry, Status, VerifyOutcome};
 
 /// D-Bus enroll status strings, live from fprintd 1.94.
-///
-/// Only what this software emits. `docs/dbus-device.xml` has the full list.
 pub mod enroll {
     pub const COMPLETED: &str = "enroll-completed";
     pub const FAILED: &str = "enroll-failed";
@@ -22,8 +21,6 @@ pub mod enroll {
 }
 
 /// D-Bus verify status strings, live from fprintd 1.94.
-///
-/// Only what this software emits. `docs/dbus-device.xml` has the full list.
 pub mod verify {
     pub const MATCH: &str = "verify-match";
     pub const NO_MATCH: &str = "verify-no-match";

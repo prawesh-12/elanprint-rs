@@ -111,7 +111,6 @@ impl Device {
             .collect()
     }
 
-    /// Write a command to `0x01`.
     pub async fn send(
         &self,
         data: &[u8],

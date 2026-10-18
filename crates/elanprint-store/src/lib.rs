@@ -131,7 +131,7 @@ pub fn writable_slots(count: u8, tracked: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// Across every user.
+/// Slots mapped by any user.
 pub fn tracked_slots(prints: &Prints) -> Vec<u8> {
     let mut slots: Vec<u8> = prints
         .values()
