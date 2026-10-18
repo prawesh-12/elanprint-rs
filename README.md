@@ -18,14 +18,6 @@ The daemon claims USB interface 0 through usbfs and speaks the protocol in
 
 ---
 
-## Read the full blog post
-
-The full reverse engineering story, including the dead ends, is written up here:
-[Building a Linux fingerprint driver for the ELAN 04f3:0c90
-sensor](https://prawesh.site/blog/01/linux-fingerprint-driver-elan-04f3-0c90).
-
----
-
 ## Table of contents
 
 - [Do I have this sensor?](#do-i-have-this-sensor)
